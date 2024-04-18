@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "geovision"
+version = "0.1.0"
+description = ""
+authors = ["Sambhav Chandra <vader.sam10@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+torch = "^2.2.2"
+torchvision = "^0.17.2"
+torchgeo = "^0.5.2"
+lightning = "^2.2.2"
+transformers = "^4.40.0"
+captum = "^0.7.0"
+scikit-learn = "^1.4.2"
+scikit-image = "^0.23.1"
+imageio = "^2.34.0"
+imagecodecs = "^2024.1.1"
+rasterio = "^1.3.10"
+geopandas = "^0.14.3"
+fiona = "^1.9.6"
+folium = "^0.16.0"
+litdata = "^0.2.3"
+py7zr = "^0.21.0"
+h5py = "^3.11.0"
+wandb = "^0.16.6"
+awscli = "^1.32.87"
+s5cmd = "^0.1.0"
+nvitop = "^1.3.2"
+jupyterlab = "^4.1.6"
+ipykernel = "^6.29.4"
+ipympl = "^0.9.4"
+python-dotenv = "^1.0.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
