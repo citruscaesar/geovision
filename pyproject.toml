@@ -32,8 +32,23 @@ jupyterlab = "^4.1.6"
 ipykernel = "^6.29.4"
 ipympl = "^0.9.4"
 python-dotenv = "^1.0.1"
-
+ruff = "^0.4.0"
+mypy = "^1.9.0"
+pydantic = "^2.7.0"
+pandera = {extras = ["geopandas", "io", "mypy"], version = "^0.18.3"}
+pyyaml = "^6.0.1"
+sqlalchemy = "^2.0.29"
+pytest = "^8.1.1"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+python_files = "*.py"
+addopts = "-s -v"
+
+[tool.ruff]
+indent-width = 4
+line-length = 100
+
