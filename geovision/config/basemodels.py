@@ -1,43 +1,40 @@
-from typing import Callable, Optional
-import yaml # type:ignore
-from pathlib import Path
-from pydantic import BaseModel
+from typing import Any
 
-class DataFrameConfig(BaseModel):
+import yaml # type: ignore
+from pathlib import Path
+from pydantic import BaseModel, ConfigDict
+from torchvision.transforms.v2 import Transform # type: ignore
+from geovision.io.local import get_valid_file_err
+
+class DatasetConfig(BaseModel):
+    name: str
+    root: Path
+    df: Path | None = None
+
     random_seed: int | None = None
-    test_frac: float | None = None
-    val_frac: float | None = None
+    test_sample: int | float | None = None
+    val_sample: int | float | None = None
+    tabular_sampling: str | None = None
+
     tile_x: tuple | None = None
     tile_y: tuple | None  = None
-    bands: tuple | None = None
-    tiling_strategy: str | None = None
-    splitting_strategy: str | None = None
+    spatial_sampling: str | None = None
 
-    # """return :split_params if valid otherwise raises ValueError or TypeError"""
-    # if not isinstance(test_split, int | float):
-        # raise TypeError(f":test_split must be numeric, got {type(test_split)}")
-    # if not isinstance(val_split, int | float):
-        # raise TypeError(f":test_split must be numeric, got {type(test_split)}")
-    # if not isinstance(random_seed, int):
-        # raise TypeError(f":random seed must be an integer, got {type(random_seed)}")
-    # if not (test_split < 1 and test_split >= 0):
-        # raise ValueError(f":test_split must belong to [0, 1), received {test_split}")
-    # if not (val_split < 1 and val_split >= 0):
-        # raise ValueError(f":val_split must belong to [0, 1), received {val_split}")
-    # if not (test_split + val_split < 1):
-        # raise ValueError(f":test_spilt = {test_split} + :val_split = {val_split} must be < 1")
-    # return test_split, val_split, random_seed
-  
+    bands: tuple | None = None
+    spectral_sampling: str | None = None
+
+    temporal_sampling: str | None = None
+
+class TransformsConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    image_transform: Transform | None = None
+    target_transform: Transform | None = None
+    common_transform: Transform | None = None
 
 class DataLoaderConfig(BaseModel):
     batch_size: int
     num_workers: int
     gradient_accumulation: int
-
-class TransformConfig(BaseModel):
-    image_transform: Callable | None = None
-    target_transform: Callable | None = None
-    common_transform: Callable | None = None
 
 class ModelConfig(BaseModel):
     encoder: str
@@ -58,20 +55,26 @@ class MetricConfig(BaseModel):
 
 class ExperimentConfig(BaseModel):
     experiment_name: str
-    dataset_name: str
-    dataset_root: Path | None = None
-    dataset_df: Path | None = None
-    dataframe_params: DataFrameConfig
-    dataloader_params: DataLoaderConfig
-    transform: TransformConfig
+    dataset: DatasetConfig
+    dataloader: DataLoaderConfig
+    transforms: TransformsConfig
     model: ModelConfig
     loss: LossConfig
     optimizer: OptimizerConfig
     metric: MetricConfig
 
     @classmethod
-    def from_yaml(cls, yaml_file: Path, transforms: dict[str, Callable]):
-        if not (yaml_file.is_file() and yaml_file.suffix == ".yaml"):
-            raise OSError(f":yaml_file is an invalid path to config, got {yaml_file}")
-        with open(yaml_file, "r") as config_yaml:
-                return cls(**(yaml.safe_load(config_yaml) | transforms))
+    def from_config_file(cls, config_file: str | Path, transforms: dict[str, Transform | None]):
+        config_dict = cls._get_config_dict(config_file)
+        transforms_dict = cls._get_transforms_dict(transforms) 
+        return cls(**(config_dict | transforms_dict))
+
+    @staticmethod 
+    def _get_config_dict(config_file: str | Path) -> dict[str, Any]:
+        config_file = get_valid_file_err(config_file, valid_extns=(".yaml",)) 
+        with open(config_file, 'r') as config:
+            return yaml.safe_load(config)
+    
+    @staticmethod
+    def _get_transforms_dict(transforms: dict[str, Transform | None]) -> dict[str, Any]: 
+        return {"transforms": transforms}

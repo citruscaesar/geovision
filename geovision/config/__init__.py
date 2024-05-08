@@ -1,1 +1,1 @@
-from .basemodels import ExperimentConfig, DataFrameConfig, TransformConfig
+from .basemodels import ExperimentConfig, DatasetConfig, TransformsConfig # noqa

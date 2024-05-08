@@ -2,162 +2,16 @@ from typing import Literal, Optional
 
 from abc import ABC, abstractmethod 
 from pandas import DataFrame, concat, read_csv
-from pandera import DataFrameSchema
-from torchvision.transforms.v2 import Transform # type: ignore
+from pandera import DataFrameSchema, Column, Check
 from pathlib import Path
-from geovision.config import DataFrameConfig, TransformConfig
+from geovision.config import DatasetConfig, TransformsConfig
 from geovision.io.local import (
-    is_valid_dir, 
-    is_empty_dir, 
-    is_valid_file,
-    is_hdf5_file
+    get_valid_dir_err,
+    get_valid_file_err
 )
 
-SPLITS = ("train", "val", "test", "trainval", "all")
-
 class Dataset(ABC):
-    def _validate_and_set_root_dir(self, root) -> None:
-        """sets self._root if it's a path to a non-empty local directory
-        Parameters
-        -
-        :root -> argument to pathlib.Path, str or os.PathLike 
-
-        Raises
-        -
-        OSError if not a path or not empty
-        """
-        _root = Path(root).expanduser().resolve()
-        if not is_valid_dir(_root):
-            raise OSError(f":root is not a directory, got {_root}")
-        if is_empty_dir(_root):
-            raise OSError(":root is empty")
-        self._root = _root
-    
-    def _validate_and_set_root_hdf5(self, root) -> None:
-        """sets self._root if it's a local hdf5 file
-        Parameters
-        -
-        :root -> argument to pathlib.Path, str or os.PathLike 
-
-        Raises
-        -
-        OSError if not a path or not an .h5 or .hdf5 file 
-        *other errors possible from pathlib
-        """
-        if not is_valid_file(root):
-            raise OSError(f":root is not a file, got {root}")
-        if not is_hdf5_file(root):
-            raise OSError(f":root is not an HDF5 file, suffix must be .h5 or .hdf5, got {root.suffix}")
-        self._root = Path(root).expanduser()
-    
-    def _validate_and_set_split(self, split) -> None:
-        """sets self._split if it's valid, otherwise raises ValueError"""
-        if split not in SPLITS:
-            raise ValueError(f"{split} is invalid for :split, must be one of {SPLITS}")
-        self._split = split
-    
-    def _validate_and_set_transform(self, transform: Optional[TransformConfig], default: TransformConfig) -> None:
-        if transform is None:
-            self._image_transform = default.image_transform
-            self._target_transform = default.target_transform
-            self._common_transform = default.common_transform
-        else:
-            self._image_transform = transform.image_transform or default.image_transform
-            self._target_transform = transform.target_transform or default.target_transform
-            self._common_transform = transform.common_transform or default.common_transform
-
-    def _validate_and_get_transform(self, transform, default_transform) -> Transform:
-        """returns :transform if it's a torchvision.Transform and default_transform if it's None
-        Parameters
-        -
-        :transform -> torchvision.Transform or None
-
-        Raises
-        -
-        TypeError
-        """
-        if isinstance(transform, Transform):
-            return transform
-        elif transform is None:
-            return default_transform
-        else:
-            TypeError(f":transform is invalid, should be Transform or None, got {type(transform)}")
-        
-    def _validate_and_set_df(
-            self,
-            schema: DataFrameSchema,
-            default_df = DataFrame,
-            default_config = DataFrameConfig,
-            split_col = str,
-            df: Optional[DataFrame | Path] = None,
-            config: Optional[DataFrameConfig] = None,
-            ) -> None:
-        if isinstance(df, DataFrame):
-            _df = df
-        elif isinstance(df, Path):
-            _df = read_csv(df)
-        elif df is None: 
-            _config = default_config if config is None else config 
-            _df = default_df 
-            _df = DataFrameSplitter(_config).split(_df, split_col)
-            if _config.tiling_strategy is not None:
-                _df = DataFrameTiler(_config).tile(_df)
-        else: 
-            raise TypeError(f":df must be one of pd.DataFrame, Path or None, got {type(df)}")
-        self._df = schema(_df, inplace = True) 
-
-    def _validate_and_set_imagefolder_split_df(self, split: str, root: Path, schema: DataFrameSchema) -> None:
-        self._split_df = schema(
-            self._df 
-            .assign(df_idx = lambda df: df.index)
-            .pipe(self._get_split_df, split)
-            .pipe(self._get_root_prefixed_to_df_paths, root), 
-        inplace = True) 
-
-    def _validate_and_set_hdf5_split_df(self, split: str, schema: DataFrameSchema) -> None:
-        self._split_df = schema(
-            self._df
-            .assign(df_idx = lambda df: df.index)
-            .pipe(self._get_split_df, split),
-        inplace = True)
-
-    def _get_split_df(self, df: DataFrame, split: str) -> DataFrame:
-        """returns a subset of rows where :split matches :df.split.
-
-        Parameters
-        - 
-        :df -> dataframe to subset.\n
-        :split -> parameter to match with the df["split"] column.\n
-
-        Raises
-        -
-        AssertionError -> if :df does not contain a column named 'split'
-        """
-
-        assert "split" in df.columns, "invalid schema, df does not contain a column named 'split'"
-        if split == "all":
-            return df
-        elif split == "trainval":
-            return (df[(df.split == "train") | (df.split == "val")].reset_index(drop=True)) # type: ignore
-        return (df[df.split == split].reset_index(drop=True))
-    
-    def _get_root_prefixed_to_df_paths(self, df: DataFrame, root: Path) -> DataFrame:
-        r"""prefixes :root to the image_path and mask_path columns in :df
-
-        Parameters 
-        -
-        :df -> dataframe 
-        :root -> path prepended to df paths
-
-        Raises
-        -
-        No Error -> if either column is missing from the dataframe
-        """
-        if "image_path" in df.columns:
-            df["image_path"] = df["image_path"].apply(lambda x: str(Path(root, x)))
-        if "mask_path" in df.columns:
-            df["mask_path"] = df["mask_path"].apply(lambda x: str(Path(root, x)))
-        return df
+    valid_splits = ("train", "val", "test", "trainval", "all")
 
     def __repr__(self) -> str:
         return '\n'.join([
@@ -173,8 +27,8 @@ class Dataset(ABC):
             root: Path,
             split: Literal["train", "val", "trainval", "test", "all"] = "all",
             df: Optional[DataFrame] = None,
-            df_config: Optional[DataFrameConfig] = None,
-            transform: Optional[TransformConfig] = None,
+            config: Optional[DatasetConfig] = None,
+            transforms: Optional[TransformsConfig] = None,
     ) -> None:
         pass
 
@@ -208,6 +62,11 @@ class Dataset(ABC):
 
     @property
     @abstractmethod
+    def transforms(self) -> TransformsConfig:
+        pass
+
+    @property
+    @abstractmethod
     def name(self) -> str:
         pass
 
@@ -231,45 +90,190 @@ class Dataset(ABC):
     def std_devs(self) -> tuple[float, ...]:
         pass
 
-class DataFrameSplitter:
+class Validator:
+    @staticmethod
+    def _get_unit_interval(num, name: str = "") -> float:
+        if num is None:
+            raise TypeError(f"{name} value cannot be None")
+        if not isinstance(num, float):
+            raise TypeError(f"{name} value expected to be Float, got {type(num)}")
+        if not (num >= 0 and num < 1):
+            raise ValueError(f"{name} value expected to belong to [0, 1), received {num}")
+        return float(num)
+        
+    @staticmethod
+    def _get_float(num, name: str = "") -> float:
+        if num is None:
+            raise TypeError(f"{name} value cannot be None")
+        if not isinstance(num, float | int):
+            raise TypeError(f"{name} value expected to be Numeric, got {type(num)}")
+        return float(num) 
+    
+    @staticmethod
+    def _get_int(num, name: str = "") -> int:
+        if num is None:
+            raise TypeError(f"{name} value cannot be None")
+        if not isinstance(num, float | int):
+            raise TypeError(f"{name} value expected to be Numeric, got {type(num)}")
+        return int(num)
 
-    #TODO: find a more elegant way to do this, this is wayy too ugly
-    #NOTE Interface: DataFrameSplitter(config).split(df, split_col)
+    @staticmethod
+    def _get_root_dir(root: str | Path) -> Path:
+        """returns :root if it's a path to an existing non-empty local directory, otherwise raises 
+        OSError"""
+        return get_valid_dir_err(root, empty_ok=False) 
+    
+    @staticmethod
+    def _get_root_hdf5(root: str | Path) -> Path:
+        """returns :root if it's a local hdf5 file, otherwise raises OSError"""
+        return get_valid_file_err(root, valid_extns=(".h5", ".hdf5"))
+    
+    @staticmethod
+    def _get_split(split: str) -> Literal["train", "val", "test", "trainval", "all"]:
+        """returns :split if it's valid, otherwise raises ValueError"""
+        if split not in Dataset.valid_splits:
+            raise ValueError(f":split must be one of {Dataset.valid_splits}, got {split}")
+        return split # type: ignore
+    
+    @staticmethod
+    def _get_transforms(
+            transforms: Optional[TransformsConfig],
+            default_transforms: TransformsConfig
+        ) -> TransformsConfig:
+        """returns a TransformsConfig with missing :transforms replaced with :default_transforms"""
+        if transforms is None:
+            return default_transforms
+        else:
+            return TransformsConfig(
+                image_transform = transforms.image_transform or default_transforms.image_transform,
+                target_transform = transforms.target_transform or default_transforms.target_transform,
+                common_transform = transforms.common_transform or default_transforms.common_transform
+            )
+    
+    @staticmethod
+    def _get_df(
+            df: Optional[str | Path | DataFrame],
+            config: Optional[DatasetConfig],
+            schema: DataFrameSchema,
+            default_df: DataFrame,
+            default_config: DatasetConfig
+        ) -> DataFrame:
 
-    def __init__(self, config: DataFrameConfig):
-        self.strategy = config.splitting_strategy
-        match self.strategy:
+        if isinstance(df, DataFrame):
+            _df = df
+        elif isinstance(df, str | Path):
+            _df = read_csv(get_valid_file_err(df, valid_extns=(".csv",)))
+        elif df is None:
+            _config = default_config if config is None else config 
+            _df = (
+                default_df
+                .pipe(TabularSampler.sample, _config)
+                .pipe(SpatialSampler.sample, _config)
+                .pipe(SpectralSampler.sample, _config)
+                .pipe(TemporalSampler.sample, _config)
+            )
+        else:
+            raise TypeError(f":df must be one of pd.DataFrame, Path or None, got {type(df)}")
+        #return _df
+        return schema(_df, inplace = True) 
+            
+    @classmethod
+    def _get_imagefolder_split_df(
+            cls,
+            df: DataFrame,
+            schema: DataFrameSchema,
+            root: Path,
+            split: str,
+        ) -> DataFrame:
+
+        _split_df = (
+            df
+            .assign(df_idx = lambda df: df.index)
+            .pipe(cls._get_split_df, split)
+            .pipe(cls._get_root_prefixed_to_df_paths, root)
+        )
+        return schema(_split_df, inplace=True)
+
+    @classmethod
+    def _get_hdf5_split_df(
+            cls,
+            df: DataFrame,
+            schema: DataFrameSchema,
+            split: str,
+        ) -> None:
+
+        _split_df = (
+            df 
+            .assign(df_idx = lambda df: df.index)
+            .pipe(cls._get_split_df, split)
+        )
+        return schema(_split_df, inplace=True)
+
+    @staticmethod
+    def _get_split_df(df: DataFrame, split: str) -> DataFrame:
+        """returns a subset of rows where :split matches :df.split.
+
+        Parameters
+        - 
+        :df -> dataframe to subset.\n
+        :split -> parameter to match with the df["split"] column.\n
+
+        Raises
+        -
+        AssertionError -> if :df does not contain a column named 'split'
+        """
+        df = DataFrameSchema({"split": Column(str, Check.isin(Dataset.valid_splits))})(df)
+        if split == "all":
+            return df
+        elif split == "trainval":
+            return (df[(df.split == "train") | (df.split == "val")].reset_index(drop=True)) # type: ignore
+        return (df[df.split == split].reset_index(drop=True))
+    
+    @staticmethod
+    def _get_root_prefixed_to_df_paths(df: DataFrame, root: Path) -> DataFrame:
+        r"""prefixes :root to the image_path and mask_path columns in :df
+
+        Parameters 
+        -
+        :df -> dataframe 
+        :root -> path prepended to df paths
+
+        Raises
+        -
+        No Error -> if either column is missing from the dataframe
+        """
+        if "image_path" in df.columns:
+            df["image_path"] = df["image_path"].apply(lambda x: str(Path(root, x)))
+        if "mask_path" in df.columns:
+            df["mask_path"] = df["mask_path"].apply(lambda x: str(Path(root, x)))
+        return df
+
+class TabularSampler:
+    @classmethod
+    def sample(cls, df: DataFrame, config: DatasetConfig) -> DataFrame:
+        match config.tabular_sampling:
             case None:
-                raise TypeError(":splitting_strategy cannot be None")
+                print(":tabular_sampling not specfied")
+                return df
             case "stratified":
-                self._validate_and_set_stratified_split_config(config)
+                return cls._get_stratified_split_df(
+                    df, config.random_seed, config.test_sample, config.val_sample # type: ignore
+                ) 
+            case "equal":
+                return cls._get_equal_split_df(
+                    df, config.random_seed, config.test_sample, config.val_sample # type: ignore
+                )
             case "random":
-                self._validate_and_set_random_split_config(config)
+                return cls._get_random_split_df(df, config.random_seed) # type: ignore
             case _:
-                raise ValueError(":splitting strategy must be one of stratified, random")
+                raise ValueError(f"invalid :tabluar_sampling, must be one of stratified, equal, random or None, got {config.tabular_sampling}")
 
-    def _validate_and_set_stratified_split_config(self, config: DataFrameConfig):
-        if config.test_frac is None:
-            raise TypeError("config.test_frac cannot be None")
-        if config.val_frac is None:
-            raise TypeError("config.val_frac cannot be None")
-        if config.random_seed is None:
-            raise TypeError("config.random_seed cannot be None")
-        self.config = config
-    
-    def split(self, df: DataFrame, split_col: str) -> DataFrame:
-        match self.strategy:
-            case "stratified":
-                return self._get_stratified_split_df(df, split_col)
-            case "random":
-                return self._get_random_split_df(df, split_col)
-            case _:
-                raise ValueError(f":splitting strategy must be one of stratified, random, got {self.strategy}")
-    
+    @staticmethod
     def _get_stratified_split_df(
-            self,
             df: DataFrame, 
-            split_col: str,
+            random_seed: int,
+            test_sample: float,
+            val_sample: float
         ) -> DataFrame:
 
         """returns df split into train-val-test, by stratified(proportionate) sampling, based on
@@ -278,8 +282,10 @@ class DataFrameSplitter:
 
         Parameters
         - 
-        :df -> dataframe to split
-        :split_col -> column in df used to 
+        :df -> dataframe to split, must contain string typed column named "split_on"
+        :random_seed -> to use for deterministic sampling from dataframe
+        :test_sample -> proportion of samples per class for testing 
+        :val_sample -> proportion of samples per class for validation
         
         Returns
         -
@@ -287,21 +293,28 @@ class DataFrameSplitter:
 
         Raises
         -
-        AssertionError if :split_col is not present in :df
+        SchemaError
         """ 
-        assert split_col in df.columns, f"invalid schema, df does not contain {split_col}"
-        test_frac, val_frac, random_seed = self.config.test_frac, self.config.val_frac, self.config.random_seed 
-        
+        df = DataFrameSchema({"split_on": Column(str)})(df)
+        random_seed = Validator._get_int(random_seed, "random_seed")
+        test_frac = Validator._get_unit_interval(test_sample, "test_sample") 
+        val_frac = Validator._get_unit_interval(val_sample, "val_sample") 
+        if not (test_frac + val_frac < 1):
+            raise ValueError(f":test_sample + :val_sample = must be < 1, got {test_frac+val_frac}")
+
         test = (df
-                .groupby(split_col, group_keys=False)
-                .apply(lambda x: x.sample(frac = test_frac, random_state = random_seed, axis = 0)) # type: ignore
+                .groupby("split_on", group_keys=False)
+                .apply(lambda x: x.sample( # type: ignore
+                        frac = test_frac, random_state = random_seed, axis = 0)
+                    )
                 .assign(split = "test")) 
                
         val = (df
                 .drop(test.index, axis = 0)
-                .groupby(split_col, group_keys=False)
-                .apply(lambda x: x.sample(frac = val_frac / (1-test_frac), # type: ignore
-                                          random_state = random_seed, axis = 0))
+                .groupby("split_on", group_keys=False)
+                .apply(lambda x: x.sample( # type: ignore
+                        frac = val_frac / (1-test_frac), random_state = random_seed, axis = 0)
+                    )
                 .assign(split = "val"))
 
         train = (df
@@ -312,21 +325,49 @@ class DataFrameSplitter:
         return (concat([train, val, test])
                 .reset_index(drop = True))
 
-    def _validate_and_set_random_split_config(self, config: DataFrameConfig):
-        if config.random_seed is None:
-            raise TypeError("config.random_seed cannot be None")
-        self.config = config
-
+    @staticmethod
     def _get_random_split_df(
-            self,
             df: DataFrame, 
-            split_col: str,
+            random_seed: int
         ) -> DataFrame:
         return DataFrame()
     
-class DataFrameTiler:
-    def __init__(self, config: DataFrameConfig):
-        pass
-
-    def tile(self, df: DataFrame) -> DataFrame:
+    @staticmethod
+    def _get_equal_split_df(
+            df: DataFrame,
+            random_seed: int,
+            test_sample: int,
+            val_sample: int,
+        ) -> DataFrame:
         return DataFrame()
+
+class SpatialSampler:
+    @classmethod
+    def sample(cls, df: DataFrame, config: DatasetConfig):
+        match config.spatial_sampling:
+            case None:
+                return df
+            case "image":
+                pass
+            case "geographic":
+                pass
+
+class SpectralSampler:
+    @classmethod
+    def sample(cls, df: DataFrame, config: DatasetConfig):
+        match config.spectral_sampling:
+            case None: 
+                return df
+            case "sen2rgb":
+                pass
+            case "sen2ms":
+                pass
+
+class TemporalSampler:
+    @classmethod
+    def sample(cls, df: DataFrame, config: DatasetConfig):
+        match config.temporal_sampling:
+            case None: 
+                return df
+            case "summer":
+                pass

@@ -1,9 +1,4 @@
-from typing import Optional, Callable 
-
-from pandas import DataFrame
-from pathlib import Path
 from torch.utils.data import DataLoader
-# from torchvision.transforms.v2 import Transform # type: ignore
 from lightning import LightningDataModule
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from geovision.data import get_dataset_from_key 
@@ -11,39 +6,15 @@ from geovision.config import ExperimentConfig
 from .dataset import Dataset
 
 class ImageDatasetDataModule(LightningDataModule):
-    def __init__(
-            self,
-            config: ExperimentConfig,
-            dataset: Optional[Callable] = None,
-            dataset_root: Optional[Path | str] = None,
-            dataset_df: Optional[DataFrame | Path | str] = None,
-    ) -> None:
+    def __init__(self, config: ExperimentConfig) -> None:
+        self.dataset = get_dataset_from_key(config.dataset.name)
+        self.root = config.dataset.root
+        self.df = config.dataset.df
 
-        self.config = config
-        self.num_workers = config.dataloader_params.num_workers
-        self.batch_size = (
-            config.dataloader_params.batch_size // config.dataloader_params.gradient_accumulation
-        )
-
-        self.dataset: Callable 
-        if dataset is None:
-            self.dataset = get_dataset_from_key(config.dataset_name)
-        else:
-            self.dataset = dataset
-
-        self.root: Path
-        if dataset_root is None:
-            self.root = config.dataset_root
-        else:
-            self.root = Path(dataset_root).expanduser()
-
-        self.df: DataFrame | Path | None
-        if dataset_df is None:
-            self.df = self.config.dataset_df
-        elif isinstance(dataset_df, str):
-            self.df = Path(dataset_df).expanduser()
-        else:
-            self.df = dataset_df
+        self.dataset_config = config.dataset
+        self.transforms_config = config.transforms
+        self.batch_size = config.dataloader.batch_size // config.dataloader.gradient_accumulation
+        self.num_workers = config.dataloader.num_workers
     
     def prepare_data(self) -> None:
         pass
@@ -63,8 +34,8 @@ class ImageDatasetDataModule(LightningDataModule):
         return {
             "root": self.root,
             "df": self.df,
-            "df_config": self.config.dataframe_params,
-            "transform": self.config.transform
+            "config": self.dataset_config,
+            "transforms": self.transforms_config
         }
     
     def _get_train_dataset(self) -> Dataset:

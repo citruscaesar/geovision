@@ -1,24 +1,23 @@
 # name of the experiment folder
 experiment_name: can imagenette work with grace
-# name of the dataset to load from geovision.data
-dataset_name: imagenette_imagefolder_classification
-# path to the dataset directory, must exist
-dataset_root: ~/datasets/imagenette
-# optional path to the dataset.csv file, must exist
-dataset_df: null 
-
 # alternative to dataset_df, specify params used to split and tile the dataset
-dataframe_params:
+dataset:
+  # name of the dataset to load from geovision.data
+  name: imagenette_imagefolder_classification
+  # path to the dataset directory, must exist
+  root: ~/datasets/imagenette
+  # optional path to the dataset.csv file, must exist
+  df: null 
   # random seed used to initialize random states everywhere, used for reproducibility, 
   # should possibly be defined outside of dataframe_params
   random_seed: 42
   # optional params assign train-val-test split
   # proportion of samples to be assigned as test split
-  test_frac: 0.2 
+  test_sample: 0.2 
   # proportion of samples to be assigned as val split
-  val_frac: 0.1
+  val_sample: 0.1
   # sampling strategy used to assign splits (e.g. stratified, random, etc.)
-  splitting_strategy: stratified
+  tabular_sampling: stratified
   # optional params to tile scenes 
   # spatially tile along the x axis: tile_x = (size_x, stride_x)
   tile_x: []
@@ -30,7 +29,7 @@ dataframe_params:
   bands: [] 
 
 # specify params to configure the dataloaders 
-dataloader_params:
+dataloader:
   # effective batch size = batch_size // gradient_accumulation
   batch_size: 32 
   gradient_accumulation: 2
