@@ -39,6 +39,12 @@ pandera = {extras = ["geopandas", "io", "mypy"], version = "^0.18.3"}
 pyyaml = "^6.0.1"
 sqlalchemy = "^2.0.29"
 pytest = "^8.1.1"
+types-requests = "^2.31.0.20240406"
+types-tqdm = "^4.66.0.20240417"
+aiohttp = "^3.9.5"
+aiofiles = "^23.2.1"
+types-aiofiles = "^23.2.0.20240403"
+tables = "^3.9.2"
 
 [build-system]
 requires = ["poetry-core"]

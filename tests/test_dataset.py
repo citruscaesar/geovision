@@ -46,5 +46,5 @@ def test_invalid_df_error(dataset, root):
     # Invalid :df raises SchemaError
     pass
 
-def test_invalid_transforms_error(dataset, root)
+def test_invalid_transforms_error(dataset, root):
     pass

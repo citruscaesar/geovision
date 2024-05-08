@@ -1,0 +1,70 @@
+# name of the experiment folder
+experiment_name: can imagenette work with grace
+# name of the dataset to load from geovision.data
+dataset_name: imagenette_imagefolder_classification
+# path to the dataset directory, must exist
+dataset_root: ~/datasets/imagenette
+# optional path to the dataset.csv file, must exist
+dataset_df: null 
+
+# alternative to dataset_df, specify params used to split and tile the dataset
+dataframe_params:
+  # random seed used to initialize random states everywhere, used for reproducibility, 
+  # should possibly be defined outside of dataframe_params
+  random_seed: 42
+  # optional params assign train-val-test split
+  # proportion of samples to be assigned as test split
+  test_frac: 0.2 
+  # proportion of samples to be assigned as val split
+  val_frac: 0.1
+  # sampling strategy used to assign splits (e.g. stratified, random, etc.)
+  splitting_strategy: stratified
+  # optional params to tile scenes 
+  # spatially tile along the x axis: tile_x = (size_x, stride_x)
+  tile_x: []
+  # spatially tile along the y axis: tile_y = (size_y, stride_y)
+  tile_y: []
+  # sampling strategy used to assign spatial tiles (e.g. image, geographic, etc.) 
+  tiling_strategy: null 
+  # optional band_order to spectrally sample the dataset 
+  bands: [] 
+
+# specify params to configure the dataloaders 
+dataloader_params:
+  # effective batch size = batch_size // gradient_accumulation
+  batch_size: 32 
+  gradient_accumulation: 2
+  # degree of multiprocessing
+  num_workers: 2
+
+# specify params to configure transformations and augmentatations
+# _transform: squence of strings parsed to torchvision.transforms
+# transform:
+  # image_transform:
+    # [compose, to_image, to_dtype_float32_scaled]
+  # target_transform:
+    # [compose, to_image, to_dtype_float32_unscaled]
+  # common_transform:
+    # [compose, resize_224_224, random_horizontal_flip_5]
+
+# specify params to configure the models, loss and optimizers
+model:
+  encoder: alexnet
+  decoder: mlp
+  weights: imagenet
+loss:
+  name: binary_cross_entropy
+  reduction: mean
+optimizer:
+  name: adam
+  lr: 1.0e-05
+
+# params to configure the primary metric monitored during train/eval 
+metric:
+  name: f1
+  mode: max
+
+
+
+
+
