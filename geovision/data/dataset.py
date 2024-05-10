@@ -1,14 +1,33 @@
 from typing import Literal, Optional
 
-from abc import ABC, abstractmethod 
-from pandas import DataFrame, concat, read_csv
-from pandera import DataFrameSchema, Column, Check
 from pathlib import Path
-from geovision.config import DatasetConfig, TransformsConfig
-from geovision.io.local import (
-    get_valid_dir_err,
-    get_valid_file_err
-)
+from pandas import DataFrame, read_csv, concat
+from pandera import DataFrameSchema, Column, Check
+from abc import ABC, abstractmethod 
+from pydantic import BaseModel, ConfigDict
+from torchvision.transforms.v2 import Transform
+from geovision.io.local import get_valid_dir_err, get_valid_file_err
+
+class DatasetConfig(BaseModel):
+    random_seed: int | None = None
+    test_sample: int | float | None = None
+    val_sample: int | float | None = None
+    tabular_sampling: str | None = None
+
+    tile_x: tuple | None = None
+    tile_y: tuple | None  = None
+    spatial_sampling: str | None = None
+
+    bands: tuple | None = None
+    spectral_sampling: str | None = None
+
+    temporal_sampling: str | None = None
+
+class TransformsConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    image_transform: Transform | None = None
+    target_transform: Transform | None = None
+    common_transform: Transform | None = None
 
 class Dataset(ABC):
     valid_splits = ("train", "val", "test", "trainval", "all")
@@ -78,6 +97,11 @@ class Dataset(ABC):
     @property
     @abstractmethod
     def class_names(self) -> tuple[str, ...]:
+        pass
+
+    @property
+    @abstractmethod
+    def num_classes(self) -> int:
         pass
 
     @property

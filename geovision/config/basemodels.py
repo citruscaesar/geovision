@@ -1,70 +1,117 @@
-from typing import Any
+from typing import Any, Callable, Optional
 
 import yaml # type: ignore
+import torch
+import torchvision
+import torchmetrics
 from pathlib import Path
-from pydantic import BaseModel, ConfigDict
-from torchvision.transforms.v2 import Transform # type: ignore
+from pydantic import BaseModel, ConfigDict, field_validator 
+from torchvision.transforms.v2 import Transform
+
 from geovision.io.local import get_valid_file_err
-
-class DatasetConfig(BaseModel):
-    name: str
-    root: Path
-    df: Path | None = None
-
-    random_seed: int | None = None
-    test_sample: int | float | None = None
-    val_sample: int | float | None = None
-    tabular_sampling: str | None = None
-
-    tile_x: tuple | None = None
-    tile_y: tuple | None  = None
-    spatial_sampling: str | None = None
-
-    bands: tuple | None = None
-    spectral_sampling: str | None = None
-
-    temporal_sampling: str | None = None
-
-class TransformsConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    image_transform: Transform | None = None
-    target_transform: Transform | None = None
-    common_transform: Transform | None = None
+from geovision.data.dataset import Dataset, DatasetConfig, TransformsConfig
+from geovision.data.imagenette import (
+    ImagenetteImagefolderClassification,
+    ImagenetteHDF5Classification
+)
 
 class DataLoaderConfig(BaseModel):
     batch_size: int
     num_workers: int
     gradient_accumulation: int
-
-class ModelConfig(BaseModel):
-    encoder: str
-    decoder: str
-    weights: str
-
-class LossConfig(BaseModel):
-    name: str
-    reduction: str | None = None
-
-class OptimizerConfig(BaseModel):
-    name: str
-    lr: float
-
-class MetricConfig(BaseModel):
-    name: str
-    mode: str 
+    persistent_workers: bool
+    pin_memory: bool
 
 class ExperimentConfig(BaseModel):
-    experiment_name: str
-    dataset: DatasetConfig
-    dataloader: DataLoaderConfig
-    transforms: TransformsConfig
-    model: ModelConfig
-    loss: LossConfig
-    optimizer: OptimizerConfig
-    metric: MetricConfig
+    model_config = ConfigDict(arbitrary_types_allowed = True)
+    name: str
+    dataset: Dataset | str
+    dataset_root: Path | str
+    dataset_df: Path | str | None
+    dataset_config: DatasetConfig | None
+    dataloader_config: DataLoaderConfig
+    model: torch.nn.Module | str
+    model_config: dict
+    criterion: torch.nn.Module | str
+    criterion_config: dict
+    optimizer: torch.optim.Optimizer | str
+    optimizer_config: dict
+    metric: torchmetrics.Metric | str
+    transforms: TransformsConfig | None
+
+    @field_validator("dataset")
+    @classmethod
+    def get_dataset(cls, name: str) -> Dataset:
+        datasets = {
+            "imagenette_imagefolder_classification": ImagenetteImagefolderClassification,
+            "imagenette_hdf5_classification": ImagenetteHDF5Classification 
+        }
+        return cls._get_fn_from_table(datasets, name, "dataset")
+
+    @field_validator("dataset_root")
+    @classmethod
+    def get_dataset_root(cls, root: str | Path) -> Path:
+        root = Path(root).expanduser()
+        if not root.exists():
+            raise FileNotFoundError(f"dataset root not found on local fs, got {root}")
+        return root
+
+    @field_validator("dataset_df")
+    @classmethod
+    def get_dataset_df(cls, df: str | Path | None) -> Path:
+        if df is not None:
+            return get_valid_file_err(df, valid_extns=(".csv",))
+
+    @field_validator("model")
+    @classmethod
+    def get_model(cls, name: str) -> Callable:
+        models = {
+            "resnet18": torchvision.models.resnet18,
+            "resnet34": torchvision.models.resnet34
+        }
+        return cls._get_fn_from_table(models, name, "model")
+
+    @field_validator("criterion")
+    @classmethod
+    def get_criterion(cls, name: str) -> Callable:
+        criterions = {
+            "binary_cross_entropy": torch.nn.BCEWithLogitsLoss,
+            "cross_entropy": torch.nn.CrossEntropyLoss,
+            "mean_squared_error": torch.nn.MSELoss,
+        }
+        return cls._get_fn_from_table(criterions, name, "criterion")
+
+    @field_validator("optimizer")
+    @classmethod
+    def get_optimizer(cls, name: str) -> Callable:
+        optimizers = {
+            "sgd": torch.optim.SGD,
+            "adam": torch.optim.Adam,
+        }
+        return cls._get_fn_from_table(optimizers, name, "optimizer")
+    
+    @field_validator("metric")
+    @classmethod
+    def get_metric(cls, name: str) -> Callable:
+        metrics = {
+            "accuracy": torchmetrics.Accuracy,
+            "f1": torchmetrics.F1Score,
+            "iou": torchmetrics.JaccardIndex,
+            "confusion_matrix": torchmetrics.ConfusionMatrix,
+            "cohen_kappa": torchmetrics.CohenKappa,
+            "auroc": torchmetrics.AUROC,
+        }
+        return cls._get_fn_from_table(metrics, name, "metric")
+
+    @staticmethod
+    def _get_fn_from_table(fn_table: dict["str", Callable], name: str, errname: str) -> Callable:
+        if name not in fn_table:
+            raise NotImplementedError(f"{errname} must be one of {fn_table.keys()}, got {name}")
+        else:
+            return fn_table[name]
 
     @classmethod
-    def from_config_file(cls, config_file: str | Path, transforms: dict[str, Transform | None]):
+    def from_config_file(cls, config_file: str | Path, transforms: Optional[dict[str, Transform | None]] = None):
         config_dict = cls._get_config_dict(config_file)
         transforms_dict = cls._get_transforms_dict(transforms) 
         return cls(**(config_dict | transforms_dict))
@@ -76,5 +123,6 @@ class ExperimentConfig(BaseModel):
             return yaml.safe_load(config)
     
     @staticmethod
-    def _get_transforms_dict(transforms: dict[str, Transform | None]) -> dict[str, Any]: 
+    def _get_transforms_dict(transforms: Optional[dict[str, Transform | None]] = None) -> dict[str, Any]: 
         return {"transforms": transforms}
+

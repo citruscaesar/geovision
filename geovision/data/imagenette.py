@@ -14,8 +14,7 @@ from pathlib import Path
 
 from tqdm import tqdm 
 from io import BytesIO
-from geovision.data.dataset import Dataset, Validator 
-from geovision.config import DatasetConfig, TransformsConfig
+from .dataset import Dataset, DatasetConfig, TransformsConfig, Validator
 from geovision.io.local import get_valid_file_err, get_valid_dir_err, get_new_dir
 from geovision.io.remote import HTTPIO 
 
@@ -165,6 +164,13 @@ class Imagenette:
         )
     
 class ImagenetteImagefolderClassification(Dataset):
+    name = Imagenette.name
+    task = Imagenette.task
+    class_names = Imagenette.class_names
+    num_classes = Imagenette.num_classes 
+    means = Imagenette.means
+    std_devs = Imagenette.std_devs
+
     _df_schema = pa.DataFrameSchema({
         "image_path": pa.Column(str, coerce = True),
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
@@ -237,27 +243,15 @@ class ImagenetteImagefolderClassification(Dataset):
     def transforms(self) -> TransformsConfig:
         return self._transforms
 
-    @property
-    def name(self) -> str:
-        return Imagenette.name 
-    
-    @property
-    def task(self) -> str:
-        return Imagenette.task 
-
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return Imagenette.class_names
-
-    @property
-    def means(self) -> tuple[float, ...]:
-        return Imagenette.means
-
-    @property
-    def std_devs(self) -> tuple[float, ...]:
-        return Imagenette.std_devs
 
 class ImagenetteHDF5Classification(Dataset):
+    name = Imagenette.name
+    task = Imagenette.task
+    class_names = Imagenette.class_names
+    num_classes = Imagenette.num_classes 
+    means = Imagenette.means
+    std_devs = Imagenette.std_devs
+
     _df_schema = pa.DataFrameSchema({
         "image_path": pa.Column(str, coerce = True),
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
@@ -330,23 +324,3 @@ class ImagenetteHDF5Classification(Dataset):
     @property
     def transforms(self) -> TransformsConfig:
         return self._transforms
-
-    @property
-    def name(self) -> str:
-        return Imagenette.name 
-
-    @property
-    def task(self) -> str:
-        return Imagenette.task 
-
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return Imagenette.class_names
-
-    @property
-    def means(self) -> tuple[float, ...]:
-        return Imagenette.means
-
-    @property
-    def std_devs(self) -> tuple[float, ...]:
-        return Imagenette.std_devs

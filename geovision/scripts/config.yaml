@@ -1,13 +1,13 @@
 # name of the experiment folder
-experiment_name: can imagenette work with grace
+name: can imagenette work with grace
+# name of the dataset to load from geovision.data
+dataset: imagenette_imagefolder_classification
+# path to the dataset directory, must exist
+dataset_root: ~/datasets/imagenette
+# optional path to the dataset.csv file, must exist
+dataset_df: null
 # alternative to dataset_df, specify params used to split and tile the dataset
-dataset:
-  # name of the dataset to load from geovision.data
-  name: imagenette_imagefolder_classification
-  # path to the dataset directory, must exist
-  root: ~/datasets/imagenette
-  # optional path to the dataset.csv file, must exist
-  df: null 
+dataset_config:
   # random seed used to initialize random states everywhere, used for reproducibility, 
   # should possibly be defined outside of dataframe_params
   random_seed: 42
@@ -29,12 +29,30 @@ dataset:
   bands: [] 
 
 # specify params to configure the dataloaders 
-dataloader:
+dataloader_config:
   # effective batch size = batch_size // gradient_accumulation
   batch_size: 32 
   gradient_accumulation: 2
   # degree of multiprocessing
   num_workers: 2
+  persistent_workers: True
+  pin_memory: True
+
+# specify params to configure the models, loss and optimizers
+model: resnet18
+model_config:
+  zero_init_residual: False
+  # weights: imagenet
+criterion: binary_cross_entropy
+criterion_config:
+  reduction: mean
+
+optimizer: adam
+optimizer_config:
+  lr: 1.0e-05
+
+# params to configure the primary metric monitored during train/eval 
+metric: f1
 
 # specify params to configure transformations and augmentatations
 # _transform: squence of strings parsed to torchvision.transforms
@@ -45,25 +63,3 @@ dataloader:
     # [compose, to_image, to_dtype_float32_unscaled]
   # common_transform:
     # [compose, resize_224_224, random_horizontal_flip_5]
-
-# specify params to configure the models, loss and optimizers
-model:
-  encoder: alexnet
-  decoder: mlp
-  weights: imagenet
-loss:
-  name: binary_cross_entropy
-  reduction: mean
-optimizer:
-  name: adam
-  lr: 1.0e-05
-
-# params to configure the primary metric monitored during train/eval 
-metric:
-  name: f1
-  mode: max
-
-
-
-
-
