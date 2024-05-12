@@ -7,7 +7,7 @@ dataset_root: ~/datasets/imagenette
 # optional path to the dataset.csv file, must exist
 dataset_df: null
 # alternative to dataset_df, specify params used to split and tile the dataset
-dataset_config:
+dataset_params:
   # random seed used to initialize random states everywhere, used for reproducibility, 
   # should possibly be defined outside of dataframe_params
   random_seed: 42
@@ -29,7 +29,7 @@ dataset_config:
   bands: [] 
 
 # specify params to configure the dataloaders 
-dataloader_config:
+dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
   batch_size: 32 
   gradient_accumulation: 2
@@ -39,20 +39,21 @@ dataloader_config:
   pin_memory: True
 
 # specify params to configure the models, loss and optimizers
-model: resnet18
-model_config:
-  zero_init_residual: False
+# model: resnet18
+# model_params:
+  # zero_init_residual: False
   # weights: imagenet
+
 criterion: binary_cross_entropy
-criterion_config:
+criterion_params:
   reduction: mean
 
 optimizer: adam
-optimizer_config:
+optimizer_params:
   lr: 1.0e-05
 
 # params to configure the primary metric monitored during train/eval 
-metric: f1
+metric: iou 
 
 # specify params to configure transformations and augmentatations
 # _transform: squence of strings parsed to torchvision.transforms

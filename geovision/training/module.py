@@ -3,56 +3,46 @@ from typing import Any, Optional
 import torch
 from lightning import LightningModule
 from torchmetrics import MetricCollection
-from geovision.config import ExperimentConfig
-from geovision.config.registers import (
-    get_dataset, 
-    get_model, 
-    get_criterion,
-    get_metric,
-    get_optimizer
-)
+from geovision.config.basemodels import ExperimentConfig
 
 class ClassificationModule(LightningModule):
-    def __init__(self, config: ExperimentConfig, model: Optional[torch.nn.Module] = None) -> None:
+    def __init__(self, config: ExperimentConfig, model: torch.nn.Module) -> None:
         super().__init__()
+        self.model = model
+        
         self.config = config
-        if model is None: 
-            self.model = get_model(config.model.name, (config.model.params | {"num_classes": self.num_classes})) 
-        else:
-            self.model = model
-        self.criterion = get_criterion(config.loss.name, config.loss.params) 
-        #self._set_metrics()
+        self.criterion = config.criterion(**config.criterion_params)
+        self._set_metrics()
 
     @property
     def class_names(self):
-        return get_dataset(self.config.dataset.name).class_names
+        return self.config.dataset.class_names 
     
     @property
     def num_classes(self):
-        return get_dataset(self.config.dataset.name).num_classes
+        return self.config.dataset.num_classes
 
     @property
     def batch_size(self):
-        return self.config.dataloader.batch_size // self.config.dataloader.gradient_accumulation
+        return self.config.dataloader_params.batch_size // self.config.dataloader_params.gradient_accumulation
     
     @property
     def learning_rate(self):
-        return self.config.optimizer.params["lr"]
+        return self.config.optimizer_params["lr"]
     
     def configure_optimizers(self):
-        self.config.optimizer.params["params"] = self.model.parameters()
-        return get_optimizer(self.config.optimizer.name, **self.config.optimizer.params)
+        self.config.optimizer_params["params"] = self.model.parameters()
+        return self.config.optimizer(**self.config.optimizer_params)
 
     def _set_metrics(self) -> None:
-        # print(f"monitor metric: {monitor_metric}")
-        monitor = self.config.metric.name
+        monitor = self.config.metric
         metric_params = {
             "task" : "multiclass" if self.num_classes > 2 else "binary",
             "num_classes": self.num_classes,
         }
 
         metrics = MetricCollection({
-            monitor: get_metric(monitor, **metric_params),
+            monitor: self.config.get_metric(monitor, metric_params),
             # NOTE: "cohen_kappa": get_metric("cohen_kappa", metric_params),
         })
 
@@ -62,8 +52,8 @@ class ClassificationModule(LightningModule):
 
         self.val_losses = list()
         self.test_losses = list()
-        self.val_confusion_matrix = get_metric("confusion_matrix", **metric_params)
-        self.test_confusion_matrix = get_metric("confusion_matrix", **metric_params)       
+        self.val_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)
+        self.test_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)       
     
     def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C' 
