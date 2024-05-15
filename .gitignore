@@ -3,6 +3,7 @@
 
 ### VS Code ###
 .vscode/
+.obsidian/
 
 ### JupyterNotebooks ###
 # gitignore template for Jupyter Notebooks

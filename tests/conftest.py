@@ -1,13 +1,13 @@
 import pytest
 from pathlib import Path
-from geovision.data import get_dataset_from_key
+from geovision.config.registers import get_dataset 
 
 def pytest_addoption(parser):
     parser.addoption(
         "--dataset", 
         action = "store_true", 
         default = "imagenette_imagefolder_classification",
-        help = "Dataset Key, format = 'dataset_name_storagetype_task', e.g.imagenette_imagefolder_classification",
+        help = "Dataset Key, format = 'dataset_name_storagetype_task', e.g. imagenette_imagefolder_classification",
     )
     parser.addoption(
         "--root", 
@@ -18,15 +18,19 @@ def pytest_addoption(parser):
     )
 
 @pytest.fixture
-def dataset(request):
-    return get_dataset_from_key(request.config.getoption("--dataset"))
+def dataset_constructor(request):
+    return get_dataset(request.config.getoption("--dataset"))
 
 @pytest.fixture
 def root(request):
     return Path(request.config.getoption("--root")).expanduser()
 
 @pytest.fixture
-def storagetype(request):
+def dataset(dataset_constructor, root):
+    return dataset_constructor(root = root)
+
+@pytest.fixture
+def storage(request):
     dataset_key = request.config.getoption("--dataset")
     if "imagefolder" in dataset_key:
         return "imagefolder"
@@ -34,3 +38,11 @@ def storagetype(request):
         return "hdf5"
     elif "litdata" in dataset_key:
         return "litdata"
+    
+@pytest.fixture
+def workflow(request):
+    dataset_key = request.config.getoption("--dataset")
+    if "classification" in dataset_key:
+        return "classification"
+    elif "segmentation" in dataset_key:
+        return "segmentation"
