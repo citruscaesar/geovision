@@ -26,6 +26,7 @@ The process of conducting deep learning experiments on satellite data typically 
     - Spectral Sampling: test if the bands tuple is within the expected range 
     - Temporal Sampling: 
     - dtypes: index(int, unique), dataset_idx(int, unique, foreign key), image_path(str, valid_file), mask_path(str, valid_file), label_idx(int, isin ...), split(str, isin Dataset.valid_splits), band_1(int), band_3(int), band_3(int), ..., crs(int), x_off(float), y_off(float), x_range(float), y_range(float). These vary per dataset and should be implemented per dataset.
+    - checking if paths are valid at every dataset init is unnecessary, too much I/O ?
 
   - Test init with an invalid root throws an Error
   - Test init with an invalid split throws an Error

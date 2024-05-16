@@ -7,6 +7,9 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, ConfigDict
 from torchvision.transforms.v2 import Transform
 from geovision.io.local import get_valid_dir_err, get_valid_file_err
+from geovision.logging import get_logger
+
+logger = get_logger("dataset")
 
 class DatasetConfig(BaseModel):
     random_seed: int | None = None
@@ -33,9 +36,10 @@ class Dataset(ABC):
     valid_splits = ("train", "val", "test", "trainval", "all")
 
     def __repr__(self) -> str:
+        name, storage, task = self.name.split('_')
         return '\n'.join([
-            f"{self.name} dataset for {self.task}",
-            f"local @ [{self.root}]",
+            f"{name} dataset for {task}",
+            f"local {storage} @ [{self.root}]",
             f"with {len(self.class_names)} classes: {self.class_names}",
             f"and {len(self)} images loaded under {self.split} split",
         ])
@@ -91,11 +95,6 @@ class Dataset(ABC):
 
     @property
     @abstractmethod
-    def task(self) -> str:
-        pass
-
-    @property
-    @abstractmethod
     def class_names(self) -> tuple[str, ...]:
         pass
 
@@ -145,16 +144,19 @@ class Validator:
     def _get_root_dir(root: str | Path) -> Path:
         """returns :root if it's a path to an existing non-empty local directory, otherwise raises 
         OSError"""
+        logger.debug(f":root = {root}")
         return get_valid_dir_err(root, empty_ok=False) 
     
     @staticmethod
     def _get_root_hdf5(root: str | Path) -> Path:
         """returns :root if it's a local hdf5 file, otherwise raises OSError"""
+        logger.debug(f":root = {root}")
         return get_valid_file_err(root, valid_extns=(".h5", ".hdf5"))
     
     @staticmethod
     def _get_split(split: str) -> Literal["train", "val", "test", "trainval", "all"]:
         """returns :split if it's valid, otherwise raises ValueError"""
+        logger.debug(f":split = {split}")
         if split not in Dataset.valid_splits:
             raise ValueError(f":split must be one of {Dataset.valid_splits}, got {split}")
         return split # type: ignore
@@ -166,6 +168,7 @@ class Validator:
         ) -> TransformsConfig:
         """returns a TransformsConfig with missing :transforms replaced with :default_transforms"""
         if transforms is None:
+            logger.debug("did not receive :transforms, using default transforms")
             return default_transforms
         else:
             return TransformsConfig(
@@ -182,13 +185,21 @@ class Validator:
             default_df: DataFrame,
             default_config: DatasetConfig
         ) -> DataFrame:
-
+        logger.debug("validating :df")
         if isinstance(df, DataFrame):
+            logger.debug(f"received :df {type(df)}")
             _df = df
         elif isinstance(df, str | Path):
+            logger.debug(f"received :df {type(df)}")
             _df = read_csv(get_valid_file_err(df, valid_extns=(".csv",)))
         elif df is None:
-            _config = default_config if config is None else config 
+            logger.debug("did not receive :df, using default df")
+            if config is None:
+                logger.debug("did not receive :config, using default")
+                _config = default_config
+            else:
+                logger.debug(f"received :config {type(config)}")
+                _config = config
             _df = (
                 default_df
                 .pipe(TabularSampler.sample, _config)
@@ -209,7 +220,7 @@ class Validator:
             root: Path,
             split: str,
         ) -> DataFrame:
-
+        logger.debug("validating imagefolder :split_df")
         _split_df = (
             df
             .assign(df_idx = lambda df: df.index)
@@ -225,7 +236,6 @@ class Validator:
             schema: DataFrameSchema,
             split: str,
         ) -> None:
-
         _split_df = (
             df 
             .assign(df_idx = lambda df: df.index)

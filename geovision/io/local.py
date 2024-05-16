@@ -10,8 +10,12 @@ def is_valid_dir(*args) -> bool:
 def is_empty_dir(*args) -> bool:
     return not bool(list(Path(*args).iterdir()))
 
-def is_valid_file(*args) -> bool:
-    return Path(*args).is_file()
+def is_valid_file(*args, valid_extns: Optional[tuple[str, ...]] = None) -> bool:
+    try:
+        get_valid_file_err(*args, valid_extns=valid_extns)
+        return True 
+    except OSError:
+        return False
 
 def is_hdf5_file(*args) -> bool:
     return Path(*args).suffix in (".h5", ".hdf5")

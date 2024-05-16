@@ -1,10 +1,9 @@
 # name of the experiment folder
-name: can imagenette work with grace
+name: can imagenet work with grace
 # name of the dataset to load from geovision.data
 dataset: imagenette_imagefolder_classification
 # path to the dataset directory, must exist
-#dataset_root: ~/datasets/imagenette
-dataset_root: ../../../../datasets/imagenette
+dataset_root: ~/datasets/imagenette
 # optional path to the dataset.csv file, must exist
 dataset_df: null
 # alternative to dataset_df, specify params used to split and tile the dataset
@@ -32,8 +31,8 @@ dataset_params:
 # specify params to configure the dataloaders 
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 32 
-  gradient_accumulation: 2
+  batch_size: 22 
+  gradient_accumulation: 1
   # degree of multiprocessing
   num_workers: 2
   persistent_workers: True

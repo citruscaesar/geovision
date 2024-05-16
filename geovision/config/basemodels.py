@@ -14,6 +14,11 @@ from geovision.data.imagenette import (
     ImagenetteImagefolderClassification,
     ImagenetteHDF5Classification
 )
+from geovision.data.imagenet import (
+    ImagenetImagefolderClassification,
+    ImagenetHDF5Classification
+)
+
 
 class DataLoaderConfig(BaseModel):
     batch_size: int
@@ -44,14 +49,16 @@ class ExperimentConfig(BaseModel):
     def get_dataset(cls, name: str) -> Dataset:
         datasets = {
             "imagenette_imagefolder_classification": ImagenetteImagefolderClassification,
-            "imagenette_hdf5_classification": ImagenetteHDF5Classification 
+            "imagenette_hdf5_classification": ImagenetteHDF5Classification,
+            "imagenet_imagefolder_classification": ImagenetImagefolderClassification,
+            "imagenet_hdf5_classification": ImagenetHDF5Classification 
         }
         return cls._get_fn_from_table(datasets, name, "dataset") #type: ignore
 
     @field_validator("dataset_root")
     @classmethod
     def get_dataset_root(cls, root: str | Path) -> Path:
-        root = Path(root).resolve().expanduser()
+        root = Path(root).expanduser().resolve()
         if not root.exists():
             raise FileNotFoundError(f"dataset root not found on local fs, got {root}")
         return root

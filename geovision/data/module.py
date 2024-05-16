@@ -52,4 +52,5 @@ class ImageDatasetDataModule(LightningDataModule):
     def _get_dataloader_kwargs(self) -> dict:
         kwargs = self.config.dataloader_params.model_dump()
         kwargs["batch_size"] = kwargs["batch_size"] // kwargs["gradient_accumulation"]
+        del kwargs["gradient_accumulation"]
         return kwargs 
