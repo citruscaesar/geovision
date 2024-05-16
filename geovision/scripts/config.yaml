@@ -3,7 +3,8 @@ name: can imagenette work with grace
 # name of the dataset to load from geovision.data
 dataset: imagenette_imagefolder_classification
 # path to the dataset directory, must exist
-dataset_root: ~/datasets/imagenette
+#dataset_root: ~/datasets/imagenette
+dataset_root: ../../../../datasets/imagenette
 # optional path to the dataset.csv file, must exist
 dataset_df: null
 # alternative to dataset_df, specify params used to split and tile the dataset

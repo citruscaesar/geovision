@@ -39,8 +39,6 @@ class Imagenette:
     means = (0.485, 0.456, 0.406)
     std_devs = (0.229, 0.224, 0.225)
     default_config = DatasetConfig(
-        name = "imagenette",
-        root = Path.home()/"datasets"/"imagenette",
         random_seed = 42,
         test_sample = 0.2,
         val_sample = 0.1,
@@ -52,6 +50,7 @@ class Imagenette:
         common_transform = T.Resize((224, 224), antialias=True)
     ) 
     hdf5_dataset_shape = (13394, 600, 600, 3) 
+    # labels should be sorted by synset values, not the names of the classes
     class_names = tuple(sorted(class_labels.values()))
     num_classes = len(class_names) 
 
@@ -69,8 +68,8 @@ class Imagenette:
         :root -> points to imagenette root, usually ~/datasets/imagenette
         """
         archive = get_valid_file_err(root, "archives", "imagenette2.tgz", valid_extns=(".tgz",))
-        tempfolder = get_new_dir(root, "temp")
         imagefolder = get_new_dir(root, "imagefolder", "images")
+        tempfolder = get_new_dir(root, "temp")
         with tarfile.open(archive) as tf:
             tf.extractall(tempfolder)
         for temp_path in tqdm(tempfolder.rglob("*.JPEG"), total = 13394):
@@ -217,8 +216,7 @@ class ImagenetteImagefolderClassification(Dataset):
         idx_row = self._split_df.iloc[idx]
         image = iio.imread(idx_row["image_path"]).squeeze()
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        if self._transforms.image_transform is not None:
-            image = self._transforms.image_transform(image)
+        image = self._transforms.image_transform(image) # type: ignore
         if self._split == "train" and self._transforms.common_transform is not None:
             image = self._transforms.common_transform(image)
         return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore 
@@ -299,8 +297,7 @@ class ImagenetteHDF5Classification(Dataset):
         with h5py.File(self.root, mode = "r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        if self._transforms.image_transform is not None:
-            image = self._transforms.image_transform(image)
+        image = self._transforms.image_transform(image) # type: ignore
         if self.split == "train" and self._transforms.common_transform is not None:
             image = self._transforms.common_transform(image)
         return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore

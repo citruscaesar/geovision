@@ -46,21 +46,22 @@ class ExperimentConfig(BaseModel):
             "imagenette_imagefolder_classification": ImagenetteImagefolderClassification,
             "imagenette_hdf5_classification": ImagenetteHDF5Classification 
         }
-        return cls._get_fn_from_table(datasets, name, "dataset")
+        return cls._get_fn_from_table(datasets, name, "dataset") #type: ignore
 
     @field_validator("dataset_root")
     @classmethod
     def get_dataset_root(cls, root: str | Path) -> Path:
-        root = Path(root).expanduser()
+        root = Path(root).resolve().expanduser()
         if not root.exists():
             raise FileNotFoundError(f"dataset root not found on local fs, got {root}")
         return root
 
     @field_validator("dataset_df")
     @classmethod
-    def get_dataset_df(cls, df: str | Path | None) -> Path:
+    def get_dataset_df(cls, df: str | Path | None) -> Path | None:
         if df is not None:
             return get_valid_file_err(df, valid_extns=(".csv",))
+        return None
 
     # @field_validator("model")
     # @classmethod
@@ -79,7 +80,7 @@ class ExperimentConfig(BaseModel):
             "cross_entropy": torch.nn.CrossEntropyLoss,
             "mean_squared_error": torch.nn.MSELoss,
         }
-        return cls._get_fn_from_table(criterions, name, "criterion")
+        return cls._get_fn_from_table(criterions, name, "criterion") # type: ignore
 
     @field_validator("optimizer")
     @classmethod
@@ -88,7 +89,7 @@ class ExperimentConfig(BaseModel):
             "sgd": torch.optim.SGD,
             "adam": torch.optim.Adam,
         }
-        return cls._get_fn_from_table(optimizers, name, "optimizer")
+        return cls._get_fn_from_table(optimizers, name, "optimizer") # type: ignore
     
     @field_validator("metric")
     @classmethod

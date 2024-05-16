@@ -20,12 +20,12 @@ def is_archive_file(*args) -> bool:
     return Path(*args).suffix in (".zip", ".tgz", ".7z")
 
 def get_new_dir(*args) -> Path:
-    dir_path = Path(*args).expanduser()
+    dir_path = Path(*args).resolve().expanduser()
     dir_path.mkdir(exist_ok=True, parents=True)
     return dir_path
 
 def get_valid_dir_err(*args, empty_ok: bool = False) -> Path:
-    dir_path = Path(*args).expanduser()
+    dir_path = Path(*args).resolve().expanduser()
     if not dir_path.is_dir():
         raise NotADirectoryError(f"{dir_path} does not point to a local directory")
     if not empty_ok:
@@ -34,7 +34,7 @@ def get_valid_dir_err(*args, empty_ok: bool = False) -> Path:
     return dir_path
 
 def get_valid_file_err(*args, valid_extns: Optional[tuple[str, ...]] = None) -> Path:
-    file_path = Path(*args).expanduser()
+    file_path = Path(*args).resolve().expanduser()
     if not file_path.is_file():
         raise FileNotFoundError(f"{file_path} does not point to a local file")
     if valid_extns is not None:

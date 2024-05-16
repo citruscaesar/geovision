@@ -1,5 +1,4 @@
 import pytest
-
 from pathlib import Path
 from pandas import DataFrame
 from torch import float32, uint8 
@@ -17,17 +16,20 @@ def test_interface(dataset):
     assert isinstance(dataset.split, str) and dataset.split == "all"
     # :df must ba a DataFrame, validated against dataframe schema 
     assert isinstance(dataset.df, DataFrame)
-    # :split_df must be a DataFrame, define the number of samples in the current split and 
-    # validated against dataframe split schema
+    # :split_df must be a DataFrame, define the number of samples in the current split and validated against dataframe split schema
     assert isinstance(dataset.split_df, DataFrame) and len(dataset) == len(dataset.split_df)
     # :name must be a string of the format datasetname_storagetype_task
     assert isinstance(dataset.name, str) and len(dataset.name.split('_')) == 3
-    assert isinstance(dataset.class_names, tuple[str, ...])
+    # :class_names must be a tuple of strings
+    assert isinstance(dataset.class_names, tuple) and isinstance(dataset.means[0], str)
+    # :num_classes must be an int
     assert isinstance(dataset.num_classes, int)
-    assert isinstance(dataset.means, tuple[float, ...])
-    assert isinstance(dataset.std_devs, tuple[float, ...])
+    # :means must be a tuple of floats 
+    assert isinstance(dataset.means, tuple) and isinstance(dataset.means[0], float)
+    # :means must be a tuple of floats 
+    assert isinstance(dataset.std_devs, tuple) and isinstance(dataset.std_devs[0], float)
 
-def test_invalid_root_error(dataset_constructor, storage, tmp_path):
+def test_invalid_root_error(dataset_constructor, tmp_path):
     # Test if :root is a nonexistant path
     with pytest.raises(OSError):
         dataset_constructor(root = tmp_path / "tmp_nonexistant_root")
