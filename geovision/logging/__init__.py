@@ -8,7 +8,7 @@ def get_logger(logger_name: str):
     logging.basicConfig(
         filename = f"{get_new_dir("logs")/timestamp}.log",
         filemode = "a",
-        format = "%(asctime)s : %(name)s : %(message)s",
-        level=logging.DEBUG
+        format = "%(asctime)s : %(name)s : %(levelname)s : %(message)s",
+        level=logging.INFO
     )
     return logger

@@ -37,8 +37,8 @@ class Imagenette:
         tabular_sampling = "stratified"
     )
     default_transforms  = TransformsConfig(
-        image_transform = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale = True)]),
-        common_transform = T.Resize((224, 224), antialias=True)
+        image_transform = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale = True), T.Resize((224, 224), antialias=True)]),
+        common_transform = T.Identity() 
     ) 
 
     @classmethod
@@ -186,7 +186,7 @@ class ImagenetteImagefolderClassification(Dataset):
             transforms: Optional[TransformsConfig] = None,
             **kwargs
         ) -> None:
-        logger.debug(f"initializing {self.name}")
+        logger.info(f"initializing {self.name}")
         self._root = Validator._get_root_dir(root/"imagefolder")
         self._split = Validator._get_split(split)
         self._transforms = Validator._get_transforms(transforms, Imagenette.default_transforms)
@@ -209,10 +209,10 @@ class ImagenetteImagefolderClassification(Dataset):
     
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
         idx_row = self._split_df.iloc[idx]
-        image = iio.imread(idx_row["image_path"]).squeeze()
+        image = iio.imread(idx_row["image_path"], format_hint=".jpg").squeeze()
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
         image = self._transforms.image_transform(image) # type: ignore
-        if self._split == "train" and self._transforms.common_transform is not None:
+        if self._split == "train":
             image = self._transforms.common_transform(image)
         return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore 
 
@@ -263,7 +263,7 @@ class ImagenetteHDF5Classification(Dataset):
             transforms: Optional[TransformsConfig] = None,
             **kwargs
         ) -> None:
-        logger.debug(f"initializing {self.name}")
+        logger.info(f"initializing {self.name}")
         self._root = Validator._get_root_hdf5(root/"hdf5"/"imagenette.h5")
         self._split = Validator._get_split(split)
         self._transforms = Validator._get_transforms(transforms, Imagenette.default_transforms)

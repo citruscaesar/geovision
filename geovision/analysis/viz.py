@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes 
@@ -32,7 +33,7 @@ def plot_sample(ax: Axes, dataset: Dataset, idx: Optional[int] = None) -> None:
         case "segmentation":
             plot_segmentation_sample(ax, image, label, ds_idx)
  
-def plot_batch(dataset: Dataset, batch: tuple, batch_idx: int) -> None:
+def plot_batch(dataset: Dataset, batch: tuple, batch_idx: int, save_to: Optional[Path] = None) -> None:
     task = dataset.name.split('_')[-1]
     images, labels, ds_idxs = batch
     n = len(images)
@@ -50,5 +51,8 @@ def plot_batch(dataset: Dataset, batch: tuple, batch_idx: int) -> None:
                     plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
                 case "segmentation":
                     plot_segmentation_sample(ax, image, label, ds_idx)
-
         ax.axis("off")
+    if save_to is not None:
+        fig.savefig(save_to/f"{dataset.name}_batch={batch_idx}_plot.png")
+        plt.clf()
+        plt.close()

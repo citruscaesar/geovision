@@ -329,7 +329,7 @@ class ImagenetImagefolderClassification(Dataset):
             config: Optional[DatasetConfig] = None,
             transforms: Optional[TransformsConfig] = None,
     ) -> None:
-        logger.debug(f"init {self.name}")
+        logger.info(f"init {self.name}")
         self._root = Validator._get_root_dir(root/"imagefolder")
         self._split = Validator._get_split(split)
         self._transforms = Validator._get_transforms(transforms, Imagenet.default_transforms)
@@ -406,7 +406,7 @@ class ImagenetHDF5Classification(Dataset):
             transforms: Optional[TransformsConfig] = None,
             **kwargs
         ) -> None:
-        logger.debug(f"init {self.name}")
+        logger.info(f"init {self.name}")
         self._root = Validator._get_root_hdf5(root/"hdf5"/"imagenet.h5")
         self._split = Validator._get_split(split)
         self._transforms = Validator._get_transforms(transforms, Imagenet.default_transforms)

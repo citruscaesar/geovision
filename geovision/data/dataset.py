@@ -144,19 +144,19 @@ class Validator:
     def _get_root_dir(root: str | Path) -> Path:
         """returns :root if it's a path to an existing non-empty local directory, otherwise raises 
         OSError"""
-        logger.debug(f":root = {root}")
+        logger.info(f":root = {root}")
         return get_valid_dir_err(root, empty_ok=False) 
     
     @staticmethod
     def _get_root_hdf5(root: str | Path) -> Path:
         """returns :root if it's a local hdf5 file, otherwise raises OSError"""
-        logger.debug(f":root = {root}")
+        logger.info(f":root = {root}")
         return get_valid_file_err(root, valid_extns=(".h5", ".hdf5"))
     
     @staticmethod
     def _get_split(split: str) -> Literal["train", "val", "test", "trainval", "all"]:
         """returns :split if it's valid, otherwise raises ValueError"""
-        logger.debug(f":split = {split}")
+        logger.info(f":split = {split}")
         if split not in Dataset.valid_splits:
             raise ValueError(f":split must be one of {Dataset.valid_splits}, got {split}")
         return split # type: ignore
@@ -168,7 +168,7 @@ class Validator:
         ) -> TransformsConfig:
         """returns a TransformsConfig with missing :transforms replaced with :default_transforms"""
         if transforms is None:
-            logger.debug("did not receive :transforms, using default transforms")
+            logger.info("did not receive :transforms, using default transforms")
             return default_transforms
         else:
             return TransformsConfig(
@@ -185,20 +185,20 @@ class Validator:
             default_df: DataFrame,
             default_config: DatasetConfig
         ) -> DataFrame:
-        logger.debug("validating :df")
+        logger.info("validating :df")
         if isinstance(df, DataFrame):
-            logger.debug(f"received :df {type(df)}")
+            logger.info(f"received :df {type(df)}")
             _df = df
         elif isinstance(df, str | Path):
-            logger.debug(f"received :df {type(df)}")
+            logger.info(f"received :df {type(df)}")
             _df = read_csv(get_valid_file_err(df, valid_extns=(".csv",)))
         elif df is None:
-            logger.debug("did not receive :df, using default df")
+            logger.info("did not receive :df, using default df")
             if config is None:
-                logger.debug("did not receive :config, using default")
+                logger.info("did not receive :config, using default")
                 _config = default_config
             else:
-                logger.debug(f"received :config {type(config)}")
+                logger.info(f"received :config {type(config)}")
                 _config = config
             _df = (
                 default_df
@@ -220,7 +220,7 @@ class Validator:
             root: Path,
             split: str,
         ) -> DataFrame:
-        logger.debug("validating imagefolder :split_df")
+        logger.info("validating imagefolder :split_df")
         _split_df = (
             df
             .assign(df_idx = lambda df: df.index)
