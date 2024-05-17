@@ -298,7 +298,7 @@ class Imagenet:
 
     @classmethod
     def get_dataset_df_from_hdf5(cls, root: str | Path) -> pd.DataFrame:
-        hdf5_path = get_valid_file_err(root / "hdf5" / "imagenet.h5", valid_extns=(".h5", ".hdf5"))
+        hdf5_path = get_valid_file_err(root, "hdf5", "imagenet.h5", valid_extns=(".h5", ".hdf5"))
         return pd.read_hdf(hdf5_path, key = "df", mode = 'r') # type: ignore
 
 class ImagenetImagefolderClassification(Dataset):

@@ -18,6 +18,10 @@ from geovision.data.imagenet import (
     ImagenetImagefolderClassification,
     ImagenetHDF5Classification
 )
+from geovision.models import (
+    alexnet,
+    resnet
+)
 
 
 class DataLoaderConfig(BaseModel):
@@ -35,8 +39,8 @@ class ExperimentConfig(BaseModel):
     dataset_df: Path | str | None
     dataset_params: DatasetConfig | None
     dataloader_params: DataLoaderConfig
-    # model: torch.nn.Module | str
-    # model_params: dict
+    model: torch.nn.Module | str
+    model_params: dict
     criterion: torch.nn.Module | str
     criterion_params: dict
     optimizer: torch.optim.Optimizer | str
@@ -70,14 +74,14 @@ class ExperimentConfig(BaseModel):
             return get_valid_file_err(df, valid_extns=(".csv",))
         return None
 
-    # @field_validator("model")
-    # @classmethod
-    # def get_model(cls, name: str) -> Callable:
-        # models = {
-            # "resnet18": torchvision.models.resnet18,
-            # "resnet34": torchvision.models.resnet34
-        # }
-        # return cls._get_fn_from_table(models, name, "model")
+    @field_validator("model")
+    @classmethod
+    def get_model(cls, name: str) -> Callable:
+        models = {
+            "alexnet": alexnet,
+            "resnet": resnet 
+        }
+        return cls._get_fn_from_table(models, name, "model")
 
     @field_validator("criterion")
     @classmethod
@@ -107,7 +111,7 @@ class ExperimentConfig(BaseModel):
         return name
     
     @classmethod
-    def get_metric(cls, name: str, init_params: dict) -> Callable:
+    def get_metric(cls, name: str, init_params: dict) -> torchmetrics.Metric:
         metrics = cls._get_metrics_dict()
         if name not in metrics:
             raise NotImplementedError(f"metric {name} not yet implemented, must be from {metrics.keys()}")

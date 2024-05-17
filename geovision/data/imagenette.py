@@ -100,7 +100,7 @@ class Imagenette:
         -
         OSError -> :archive invalid path if not found at :root/archives/imagenette2.tgz
         """
-        archive = get_valid_file_err(root / "archives" / "imagenette2.tgz", valid_extns=(".tgz",))
+        archive = get_valid_file_err(root, "archives", "imagenette2.tgz", valid_extns=(".tgz",))
         with tarfile.open(archive) as a:
             return (
                 pd.DataFrame({"image_path": [Path(p) for p in a.getnames() if p.endswith(".JPEG")]})
@@ -119,7 +119,7 @@ class Imagenette:
         -
         OSError -> :imagefolder invalid path if not found at :root/imagefolder/images
         """
-        imagefolder = get_valid_dir_err(root / "imagefolder" / "images")
+        imagefolder = get_valid_dir_err(root, "imagefolder", "images")
         return pd.DataFrame({"image_path": list(imagefolder.rglob("*.jpg"))}).pipe(cls._get_dataset_df)
     
     @classmethod
@@ -134,7 +134,7 @@ class Imagenette:
         -
         OSError -> :hdf5_path invalid path
         """
-        hdf5_path = get_valid_file_err(root / "hdf5" / "imagenette.h5", valid_extns=(".h5", ".hdf5"))
+        hdf5_path = get_valid_file_err(root, "hdf5", "imagenette.h5", valid_extns=(".h5", ".hdf5"))
         return pd.read_hdf(hdf5_path, key = "df", mode = 'r') # type: ignore
 
     @classmethod 
@@ -213,7 +213,7 @@ class ImagenetteImagefolderClassification(Dataset):
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
         image = self._transforms.image_transform(image) # type: ignore
         if self._split == "train":
-            image = self._transforms.common_transform(image)
+            image = self._transforms.common_transform(image) # type: ignore
         return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore 
 
     @property

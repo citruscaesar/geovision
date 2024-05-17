@@ -39,10 +39,11 @@ dataloader_params:
   pin_memory: True
 
 # specify params to configure the models, loss and optimizers
-# model: resnet18
-# model_params:
-  # zero_init_residual: False
-  # weights: imagenet
+model: alexnet 
+model_params:
+  num_layers: null 
+  weights: imagenet
+  zero_init_residual: False
 
 criterion: binary_cross_entropy
 criterion_params:

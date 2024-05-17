@@ -60,37 +60,22 @@ class ImageDatasetDataModule(LightningDataModule):
         del kwargs["gradient_accumulation"]
         return kwargs 
 
-    # Test output shape, dtype is consistent for all batches per epoch 
-    # if batch_idx == 0:
-        # epoch_image_shape = images.shape
-        # epoch_label_shape = labels.shape
-    # elif images.shape != epoch_image_shape:
-        # print(f"inconsistent image batch ({batch_idx}) shape, expected {epoch_image_shape}, got {images.shape}")
-    # elif labels.shape != epoch_label_shape:
-        # print(f"inconsistent label batch ({batch_idx}) shape, expected {epoch_image_shape}, got {images.shape}")
-    # epoch_image_shape = torch.Size() 
-    # epoch_label_shape = torch.Size() 
-    # print(f"{split} image batch shape: {epoch_image_shape}")
-    # print(f"{split} label batch shape: {epoch_label_shape}")
-
-def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batches: bool = False) -> None:
-    from memory_profiler import memory_usage
+def test_datamodule(dm: ImageDatasetDataModule, limit_batches: int = 0, plot_batches: bool = False) -> None:
+    from memory_profiler import memory_usage # type: ignore
     from matplotlib import pyplot as plt
-    # Test for no memory leaks
-    # Display memory usage
     plots_dir = get_new_dir('plots') 
 
     def test_one_epoch(dl: DataLoader, split: str) -> set[int]:
         max_idx = len(dl) if limit_batches == 0 or limit_batches > len(dl) else limit_batches
-        batch_shape = tuple()
-        epoch_idxs = set()
+        batch_shape: tuple = tuple()
+        epoch_idxs: set[int] = set()
         for batch_idx, batch in tqdm(enumerate(dl), total = len(dl), desc = f"testing {split} dataloader"):
             if batch_idx > max_idx:
                 break
             if batch_idx == 0:
                 batch_shape = tuple(x.shape for x in batch[:2])
             if plot_batches:
-                plot_batch(dl.dataset, batch, batch_idx, plots_dir)
+                plot_batch(dl.dataset, batch, batch_idx, plots_dir) # type: ignore
             if len(repeated_idxs := epoch_idxs.intersection(batch[2].tolist())) != 0:
                 print(f"repeated samples in {split} epoch, indices: {repeated_idxs}")
             epoch_idxs.update(batch[2].tolist())
@@ -103,12 +88,12 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
     df = dm.val_dataset.df
     all_idxs = set(df.index.to_list())
     dm.setup('fit')
-    train_mem_usage, train_idxs = memory_usage((test_one_epoch, (dm.train_dataloader(), "train")), retval=True)
-    val_mem_usage, val_idxs = memory_usage((test_one_epoch, (dm.val_dataloader(), "val")), retval=True)
+    train_mem_usage, train_idxs = memory_usage((test_one_epoch, (dm.train_dataloader(), "train")), retval=True, interval = 0.01)
+    val_mem_usage, val_idxs = memory_usage((test_one_epoch, (dm.val_dataloader(), "val")), retval=True, interval = 0.01)
 
     dm.setup('test')
     #test_idxs = test_one_epoch(dm.test_dataloader(), "test")
-    test_mem_usage, test_idxs = memory_usage((test_one_epoch, (dm.test_dataloader(), "test")), retval=True)
+    test_mem_usage, test_idxs = memory_usage((test_one_epoch, (dm.test_dataloader(), "test")), retval=True, interval = 0.01)
 
     plt.plot(train_mem_usage, label = "train")
     plt.plot(val_mem_usage, label = "val")
@@ -117,21 +102,22 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
     plt.title("Memory Profile")
     plt.ylabel("Memory Used (MB)")
     plt.xlabel("Time (100ms)")
+    plt.savefig(plots_dir/"memory_profile.png")
 
-    observed_idxs = set().union(train_idxs, val_idxs, test_idxs)
+    observed_idxs: set = set().union(train_idxs, val_idxs, test_idxs)
     if observed_idxs != all_idxs:
         print("mismatch between dataframe and observed samples")
 
         unobserved_idxs = all_idxs.difference(observed_idxs)
         if len(unobserved_idxs) != 0:
             print("indices were not observed")
-            display(df.filter(items = sorted(unobserved_idxs), axis = 0))
+            display(df.filter(items = sorted(unobserved_idxs), axis = 0))  # type: ignore # noqa
 
         overobserved_idxs = observed_idxs.difference(all_idxs)
         if len(overobserved_idxs) != 0:
             print(f"unknown indices were observerd: {overobserved_idxs}") 
 
-    overlapped_idxs = set().intersection(train_idxs, val_idxs, test_idxs)
+    overlapped_idxs: set = set().intersection(train_idxs, val_idxs, test_idxs)
     if len(overlapped_idxs) != 0:
         print(f"overlapping samples, indices: {overlapped_idxs}")
-        display(df.filter(items = sorted(overlapped_idxs), axis = 0))
+        display(df.filter(items = sorted(overlapped_idxs), axis = 0)) # type: ignore # noqa

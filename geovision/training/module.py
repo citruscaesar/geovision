@@ -8,10 +8,10 @@ from geovision.config.basemodels import ExperimentConfig
 class ClassificationModule(LightningModule):
     def __init__(self, config: ExperimentConfig, model: torch.nn.Module) -> None:
         super().__init__()
-        self.model = model
         
         self.config = config
-        self.criterion = config.criterion(**config.criterion_params)
+        self.model = config.model(num_classes = config.dataset.num_classes, **config.model_params) #type: ignore
+        self.criterion = config.criterion(**config.criterion_params) #type: ignore
         self._set_metrics()
 
     @property
