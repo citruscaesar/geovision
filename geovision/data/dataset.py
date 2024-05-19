@@ -179,41 +179,6 @@ class Validator:
             )
     
     @staticmethod
-    def test_dataset(config: Any, split: str = "all"):
-        ds: Dataset = config.dataset(
-            root = config.dataset_root,
-            split = split,
-            df = config.dataset_df,
-            config = config.dataset_params,
-            transforms = config.transforms
-        )
-        expected_image_shape = ds[0][0].shape
-        expected_label_shape = ds[0][1].shape
-        expected_image_dtype = ds[0][0].dtype
-        expected_label_dtype = ds[0][1].dtype
-
-        print(f"{ds.name} @ [{ds.root}]")
-        print(f"image shape: {expected_image_shape}, dtype: {expected_image_dtype}")
-        print(f"label shape: {expected_label_shape}, dtype: {expected_label_dtype}")
-
-        df_idxs: set[int] = set()
-        for idx in tqdm(range(len(ds)), desc = "loading dataset"):
-            image, label, df_idx = ds[idx]
-            df_idxs.add(df_idx)
-            if image.shape != expected_image_shape:
-                print(f"idx = {df_idx}, inconsistent image shape, got {image.shape}")
-            if label.shape != expected_label_shape:
-                print(f"idx = {df_idx}, inconsistent label shape, got {label.shape}")
-            if image.dtype != expected_image_dtype:
-                print(f"idx = {df_idx}, inconsistent image dtype, got {image.dtype}")
-            if label.dtype != expected_label_dtype:
-                print(f"idx = {df_idx}, inconsistent label dtype, got {label.dtype}")
-        
-        if len(missing_idxs := set(ds.df.index.to_list()).difference(df_idxs)) != 0:
-            print("some samples did not load")
-            display(ds.df.filter(items = sorted(missing_idxs), axis = 0))  # type: ignore # noqa
-    
-    @staticmethod
     def _get_df(
             df: Optional[str | Path | DataFrame],
             config: Optional[DatasetConfig],
