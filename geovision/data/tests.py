@@ -1,6 +1,7 @@
+import torch
 from typing import Any
 from tqdm import tqdm
-from memory_profiler import memory_usage
+from memory_profiler import memory_usage # type: ignore
 from matplotlib import pyplot as plt
 from geovision.analysis.viz import plot_batch
 from geovision.io.local import get_new_dir
@@ -11,15 +12,15 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
     plots_dir = get_new_dir('plots') 
     def test_one_epoch(dl: DataLoader, split: str) -> set[int]:
         max_idx = len(dl) if limit_batches == 0 or limit_batches > len(dl) else limit_batches
-        batch_shape = tuple()
-        epoch_idxs = set()
+        batch_shape: tuple = tuple()
+        epoch_idxs: set = set()
         for batch_idx, batch in tqdm(enumerate(dl), total = len(dl), desc = f"testing {split} dataloader"):
             if batch_idx > max_idx:
                 break
             if batch_idx == 0:
                 batch_shape = tuple(x.shape for x in batch[:2])
             if plot_batches:
-                plot_batch(dl.dataset, batch, batch_idx, plots_dir)
+                plot_batch(dl.dataset, batch, batch_idx, plots_dir) # type: ignore
             if len(repeated_idxs := epoch_idxs.intersection(batch[2].tolist())) != 0:
                 print(f"repeated samples in {split} epoch, indices: {repeated_idxs}")
             epoch_idxs.update(batch[2].tolist())
@@ -29,7 +30,7 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
         return epoch_idxs
     
     dm.setup("validate")
-    df = dm.val_dataset.df
+    df = dm.val_dataset.df # type: ignore 
     all_idxs = set(df.index.to_list())
     dm.setup('fit')
     train_mem_usage, train_idxs = memory_usage((test_one_epoch, (dm.train_dataloader(), "train")), retval=True)
@@ -59,7 +60,7 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
         if len(overobserved_idxs) != 0:
             print(f"unknown indices were observerd: {overobserved_idxs}") 
 
-    overlapped_idxs = set().intersection(train_idxs, val_idxs, test_idxs)
+    overlapped_idxs: set = set().intersection(train_idxs, val_idxs, test_idxs)
     if len(overlapped_idxs) != 0:
         print(f"overlapping samples, indices: {overlapped_idxs}")
         display(df.filter(items = sorted(overlapped_idxs), axis = 0)) # type: ignore # noqa
@@ -77,12 +78,12 @@ def test_dataset(config: Any, split: str = "all"):
     expected_image_dtype = ds[0][0].dtype
     expected_label_dtype = ds[0][1].dtype
 
-    print(f"{ds.name} @ [{ds.root}]")
+    print(f"{ds.name} @ [{ds.root}]") # type: ignore
     print(f"image shape: {expected_image_shape}, dtype: {expected_image_dtype}")
     print(f"label shape: {expected_label_shape}, dtype: {expected_label_dtype}")
 
     df_idxs: set[int] = set()
-    for idx in tqdm(range(len(ds)), desc = "loading dataset"):
+    for idx in tqdm(range(len(ds)), desc = "loading dataset"): # type: ignore
         image, label, df_idx = ds[idx]
         df_idxs.add(df_idx)
         if image.shape != expected_image_shape:
@@ -94,6 +95,6 @@ def test_dataset(config: Any, split: str = "all"):
         if label.dtype != expected_label_dtype:
             print(f"idx = {df_idx}, inconsistent label dtype, got {label.dtype}")
     
-    if len(missing_idxs := set(ds.df.index.to_list()).difference(df_idxs)) != 0:
+    if len(missing_idxs := set(ds.df.index.to_list()).difference(df_idxs)) != 0: # type: ignore
         print("some samples did not load")
         display(ds.df.filter(items = sorted(missing_idxs), axis = 0))  # type: ignore # noqa

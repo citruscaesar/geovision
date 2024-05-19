@@ -2,11 +2,10 @@ from typing import Any, Callable, Optional
 
 import yaml # type: ignore
 import torch
-import torchvision
 import torchmetrics
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, field_validator 
-from torchvision.transforms.v2 import Transform
+from torchvision.transforms.v2 import Transform # type: ignore
 
 from geovision.io.local import get_valid_file_err
 from geovision.data.dataset import Dataset, DatasetConfig, TransformsConfig

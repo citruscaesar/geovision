@@ -1,6 +1,6 @@
 from typing import Callable, Any
 import torch
-import torchvision
+import torchvision # type: ignore
 import torchmetrics
 #from torchvision.transforms import v2 as T # type: ignore
 from geovision.data.imagenette import ImagenetteImagefolderClassification
@@ -15,7 +15,7 @@ def get_metric(name: str, init_params: dict[str, Any]) -> Callable:
         "cohen_kappa": torchmetrics.CohenKappa,
         "auroc": torchmetrics.AUROC,
     }
-    return _get_fn_from_table(metrics, name)(**init_params)
+    return _get_fn_from_table(metrics, name)(**init_params) # type: ignore
 
 def get_criterion(name: str, init_params: dict[str, Any]) -> Callable:
     criterions = {
@@ -23,28 +23,28 @@ def get_criterion(name: str, init_params: dict[str, Any]) -> Callable:
         "cross_entropy": torch.nn.CrossEntropyLoss,
         "mean_squared_error": torch.nn.MSELoss,
     }
-    return _get_fn_from_table(criterions, name)(**init_params)
+    return _get_fn_from_table(criterions, name)(**init_params) # type: ignore
     
 def get_optimizer(name: str, init_params: dict[str, Any]) -> Callable:
     optimizers = {
         "sgd": torch.optim.SGD,
         "adam": torch.optim.Adam,
     }
-    return _get_fn_from_table(optimizers, name)(**init_params)
+    return _get_fn_from_table(optimizers, name)(**init_params) # type: ignore
 
 def get_dataset(name: str) -> Callable:
     datasets = {
         "imagenette_imagefolder_classification": ImagenetteImagefolderClassification,
         "imagenette_hdf5_classification": ImagenetteHDF5Classification 
     }
-    return _get_fn_from_table(datasets, name)
+    return _get_fn_from_table(datasets, name) # type: ignore
 
 def get_model(name: str, init_params: dict[str, Any]):
     models = {
         "resnet18": torchvision.models.resnet18,
         "resnet34": torchvision.models.resnet34
     }
-    return _get_fn_from_table(models, name)(**init_params)
+    return _get_fn_from_table(models, name)(**init_params) # type: ignore
 
 def _get_fn_from_table(fn_table: dict["str", Callable], name: str) -> Callable:
     if name not in fn_table:

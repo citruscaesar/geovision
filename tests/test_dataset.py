@@ -3,7 +3,7 @@ from pathlib import Path
 from pandas import DataFrame
 from torch import float32, uint8 
 from numpy import integer
-from torchvision.tv_tensors import Image, Mask
+from torchvision.tv_tensors import Image, Mask # type; ignore
 from geovision.io.local import get_new_dir 
 
 def test_config(dataset_constructor, root):

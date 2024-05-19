@@ -50,8 +50,8 @@ class ClassificationModule(LightningModule):
         self.val_metrics = metrics.clone(prefix = "val/")
         self.test_metrics = metrics.clone(prefix = "test/")
 
-        self.val_losses = list()
-        self.test_losses = list()
+        self.val_losses: list[float] = list()
+        self.test_losses: list[float] = list()
         self.val_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)
         self.test_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)       
     
