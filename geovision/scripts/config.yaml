@@ -1,5 +1,5 @@
 # name of the experiment folder
-name: can imagenet work with grace
+name: can imagenette work with grace 
 # name of the dataset to load from geovision.data
 dataset: imagenette_imagefolder_classification
 # path to the dataset directory, must exist
@@ -31,7 +31,7 @@ dataset_params:
 # specify params to configure the dataloaders 
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 22 
+  batch_size: 64 
   gradient_accumulation: 1
   # degree of multiprocessing
   num_workers: 2
@@ -39,13 +39,12 @@ dataloader_params:
   pin_memory: True
 
 # specify params to configure the models, loss and optimizers
-model: alexnet 
-model_params:
+nn: alexnet 
+nn_params:
   num_layers: null 
   weights: imagenet
-  zero_init_residual: False
 
-criterion: binary_cross_entropy
+criterion: cross_entropy
 criterion_params:
   reduction: mean
 

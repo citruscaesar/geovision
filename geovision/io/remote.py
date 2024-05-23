@@ -28,7 +28,6 @@ class HTTPIO:
         else:
             Path.mkdir(local.parent, exist_ok=True, parents=True)
 
-
         response = requests.get(remote, stream = True)
         total_size = int(response.headers.get("content-length", 0))
         with tqdm(total = total_size, unit = "B", unit_scale = True, 
@@ -41,8 +40,6 @@ class HTTPIO:
 
         if total_size != 0 and progress_bar.n != total_size:
             raise RuntimeError("could not download file completely")
-    
-    
     
     @classmethod
     async def async_download_urls(cls, remote: Iterable[str], local: Path) -> None:

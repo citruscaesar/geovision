@@ -16,6 +16,7 @@ from tqdm import tqdm
 from io import BytesIO
 from .dataset import Dataset, DatasetConfig, TransformsConfig, Validator
 from geovision.io.local import get_valid_file_err, get_valid_dir_err, get_new_dir, is_valid_file
+from geovision.io.local import get_dataset_dir
 from geovision.io.remote import HTTPIO 
 from geovision.logging import get_logger
 logger = get_logger("imagenette")
@@ -44,8 +45,7 @@ class Imagenette:
     @classmethod
     def download(cls, root: str | Path):
         r"""download and save imagenette2.tgz to :root/archives/"""
-        root = Path(root) / "archives"
-        HTTPIO.download_url(cls.url, root)
+        HTTPIO.download_url(cls.url, get_dataset_dir(root, "archives", invalid_ok=True))
     
     @classmethod
     def transform_to_imagefolder(cls, root: str | Path) -> None:
@@ -54,9 +54,9 @@ class Imagenette:
         -
         :root -> points to imagenette root, usually ~/datasets/imagenette
         """
-        archive = get_valid_file_err(root, "archives", "imagenette2.tgz", valid_extns=(".tgz",))
-        imagefolder = get_new_dir(root, "imagefolder", "images")
-        tempfolder = get_new_dir(root, "temp")
+        archive = get_valid_file_err(get_dataset_dir(root, "archives"), "imagenette2.tgz", valid_extns=(".tgz",))
+        imagefolder = get_dataset_dir(root, "images") 
+        tempfolder = get_dataset_dir(root, "temp") 
         with tarfile.open(archive) as tf:
             tf.extractall(tempfolder)
         for temp_path in tqdm(tempfolder.rglob("*.JPEG"), total = 13394):
@@ -72,8 +72,8 @@ class Imagenette:
         -
         :root -> points to imagenette root, usually ~/datasets/imagenette
         """
-        imagefolder_path = get_valid_dir_err(root, "imagefolder")
-        hdf5_path = get_new_dir(root, "hdf5") / "imagenette.h5"
+        imagefolder_path = get_dataset_dir(root, "imagefolder", invalid_ok=False) 
+        hdf5_path = get_dataset_dir(root, "hdf5", invalid_ok=True) / "imagenette.h5"
 
         df = cls.get_dataset_df_from_imagefolder(root)  
         df.to_hdf(hdf5_path, mode = "w", key = "df")
@@ -100,7 +100,7 @@ class Imagenette:
         -
         OSError -> :archive invalid path if not found at :root/archives/imagenette2.tgz
         """
-        archive = get_valid_file_err(root, "archives", "imagenette2.tgz", valid_extns=(".tgz",))
+        archive = get_valid_file_err(get_dataset_dir(root, "archives"), "imagenette2.tgz", valid_extns=(".tgz",))
         with tarfile.open(archive) as a:
             return (
                 pd.DataFrame({"image_path": [Path(p) for p in a.getnames() if p.endswith(".JPEG")]})
@@ -119,7 +119,7 @@ class Imagenette:
         -
         OSError -> :imagefolder invalid path if not found at :root/imagefolder/images
         """
-        imagefolder = get_valid_dir_err(root, "imagefolder", "images")
+        imagefolder = get_dataset_dir(root, "imagefolder") 
         return pd.DataFrame({"image_path": list(imagefolder.rglob("*.jpg"))}).pipe(cls._get_dataset_df)
     
     @classmethod
@@ -134,7 +134,7 @@ class Imagenette:
         -
         OSError -> :hdf5_path invalid path
         """
-        hdf5_path = get_valid_file_err(root, "hdf5", "imagenette.h5", valid_extns=(".h5", ".hdf5"))
+        hdf5_path = get_valid_file_err(get_dataset_dir(root, "hdf5"), "imagenette.h5", valid_extns=(".h5", ".hdf5"))
         return pd.read_hdf(hdf5_path, key = "df", mode = 'r') # type: ignore
 
     @classmethod 
@@ -187,7 +187,7 @@ class ImagenetteImagefolderClassification(Dataset):
             **kwargs
         ) -> None:
         logger.info(f"initializing {self.name}")
-        self._root = Validator._get_root_dir(root/"imagefolder")
+        self._root = Validator._get_root_dir(get_dataset_dir(root, "imagefolder"))
         self._split = Validator._get_split(split)
         self._transforms = Validator._get_transforms(transforms, Imagenette.default_transforms)
         self._df = Validator._get_df(
@@ -264,7 +264,7 @@ class ImagenetteHDF5Classification(Dataset):
             **kwargs
         ) -> None:
         logger.info(f"initializing {self.name}")
-        self._root = Validator._get_root_hdf5(root/"hdf5"/"imagenette.h5")
+        self._root = Validator._get_root_hdf5(get_dataset_dir(root, "hdf5")/"imagenette.h5")
         self._split = Validator._get_split(split)
         self._transforms = Validator._get_transforms(transforms, Imagenette.default_transforms)
         self._df = Validator._get_df(

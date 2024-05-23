@@ -6,11 +6,11 @@ from torchmetrics import MetricCollection
 from geovision.config.basemodels import ExperimentConfig
 
 class ClassificationModule(LightningModule):
-    def __init__(self, config: ExperimentConfig, model: torch.nn.Module) -> None:
+    def __init__(self, config: ExperimentConfig) -> None:
         super().__init__()
         
         self.config = config
-        self.model = config.model(num_classes = config.dataset.num_classes, **config.model_params) #type: ignore
+        self.model = config.nn(num_classes = config.dataset.num_classes, **config.nn_params.model_dump()) #type: ignore
         self.criterion = config.criterion(**config.criterion_params) #type: ignore
         self._set_metrics()
 
@@ -32,19 +32,16 @@ class ClassificationModule(LightningModule):
     
     def configure_optimizers(self):
         self.config.optimizer_params["params"] = self.model.parameters()
-        return self.config.optimizer(**self.config.optimizer_params)
+        return {"optimizer": self.config.optimizer(**self.config.optimizer_params)}
 
     def _set_metrics(self) -> None:
         monitor = self.config.metric
         metric_params = {
-            "task" : "multiclass" if self.num_classes > 2 else "binary",
+            "task" : "multiclass" if self.config.dataset.num_classes > 2 else "binary",
             "num_classes": self.num_classes,
         }
 
-        metrics = MetricCollection({
-            monitor: self.config.get_metric(monitor, metric_params),
-            # NOTE: "cohen_kappa": get_metric("cohen_kappa", metric_params),
-        })
+        monitor_metric = self.config.get_metric(monitor, metric_params),
 
         self.train_metrics = metrics.clone(prefix = "train/")
         self.val_metrics = metrics.clone(prefix = "val/")
@@ -52,8 +49,8 @@ class ClassificationModule(LightningModule):
 
         self.val_losses: list[float] = list()
         self.test_losses: list[float] = list()
-        self.val_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)
-        self.test_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)       
+        # self.val_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)
+        # self.test_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)       
     
     def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C' 

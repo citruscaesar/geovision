@@ -45,3 +45,29 @@ def get_valid_file_err(*args, valid_extns: Optional[tuple[str, ...]] = None) -> 
         if file_path.suffix not in valid_extns:
             raise OSError(f"{file_path} must be one of {valid_extns}")
     return file_path
+
+def get_experiments_dir(config) -> Path:
+    ds_name, _, ds_task = config.dataset.name.split('_')
+    expr_name = config.name.replace(' ', '_')
+    return get_new_dir(Path.home(), "experiments", '_'.join([ds_name, ds_task]), expr_name)
+
+def get_dataset_dir(root: str | Path, dir_name: str, invalid_ok = False) -> Path:
+    def _validate(*args) -> Path:
+        dir_path = Path(root).expanduser().resolve() / Path(*args) 
+        if invalid_ok:
+            return get_new_dir(dir_path)
+        return get_valid_dir_err(dir_path)
+
+    match dir_name:
+        case "archives":
+            return _validate("archives")
+        case "imagefolder":
+            return _validate("imagefolder")
+        case "hdf5":
+            return _validate("hdf5")
+        case "images":
+            return _validate("imagefolder", "images")
+        case "masks":
+            return _validate("imagefolder", "masks")
+        case _:
+            raise ValueError("invalid :dir_name, must be one of archives, imagefolder, hdf5, images, masks")

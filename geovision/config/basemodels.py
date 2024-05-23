@@ -22,13 +22,16 @@ from geovision.models import (
     resnet
 )
 
-
 class DataLoaderConfig(BaseModel):
     batch_size: int
     num_workers: int
     gradient_accumulation: int
     persistent_workers: bool
     pin_memory: bool
+
+class NNParams(BaseModel):
+    weights: str
+    num_layers: int | None
 
 class ExperimentConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed = True)
@@ -38,8 +41,8 @@ class ExperimentConfig(BaseModel):
     dataset_df: Path | str | None
     dataset_params: DatasetConfig | None
     dataloader_params: DataLoaderConfig
-    model: torch.nn.Module | str
-    model_params: dict
+    nn: torch.nn.Module | str
+    nn_params: NNParams 
     criterion: torch.nn.Module | str
     criterion_params: dict
     optimizer: torch.optim.Optimizer | str
@@ -73,7 +76,7 @@ class ExperimentConfig(BaseModel):
             return get_valid_file_err(df, valid_extns=(".csv",))
         return None
 
-    @field_validator("model")
+    @field_validator("nn")
     @classmethod
     def get_model(cls, name: str) -> Callable:
         models = {
@@ -124,7 +127,7 @@ class ExperimentConfig(BaseModel):
             return fn_table[name]
     
     @classmethod
-    def from_config_file(cls, config_file: str | Path, transforms: Optional[dict[str, Transform | None]] = None):
+    def from_yaml(cls, config_file: str | Path, transforms: Optional[dict[str, Transform | None]] = None):
         config_dict = cls._get_config_dict(config_file)
         transforms_dict = cls._get_transforms_dict(transforms) 
         return cls(**(config_dict | transforms_dict))
