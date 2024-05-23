@@ -12,15 +12,16 @@ class ClassificationModule(LightningModule):
         self.config = config
         self.model = config.nn(num_classes = config.dataset.num_classes, **config.nn_params.model_dump()) #type: ignore
         self.criterion = config.criterion(**config.criterion_params) #type: ignore
-        self._set_metrics()
 
-    @property
-    def class_names(self):
-        return self.config.dataset.class_names 
-    
-    @property
-    def num_classes(self):
-        return self.config.dataset.num_classes
+        self.metric_params = {
+            # TODO: add option for task to be 'multilabel' from config.dataset.name.split('_')[-1]
+            "task": "multiclass" if self.config.dataset.num_classes > 2 else "binary",
+            "num_classes": self.config.dataset.num_classes,
+        }
+        # TODO: add option for multiple metrics to be tracked, return MetricCollection from get_metric and treat config.metric as a list
+        self.train_metric = config.get_metric(config.metric, self.metric_params)
+        self.val_metric = config.get_metric(config.metric, self.metric_params)
+        self.test_metric = config.get_metric(config.metric, self.metric_params)
 
     @property
     def batch_size(self):
@@ -33,24 +34,6 @@ class ClassificationModule(LightningModule):
     def configure_optimizers(self):
         self.config.optimizer_params["params"] = self.model.parameters()
         return {"optimizer": self.config.optimizer(**self.config.optimizer_params)}
-
-    def _set_metrics(self) -> None:
-        monitor = self.config.metric
-        metric_params = {
-            "task" : "multiclass" if self.config.dataset.num_classes > 2 else "binary",
-            "num_classes": self.num_classes,
-        }
-
-        monitor_metric = self.config.get_metric(monitor, metric_params),
-
-        self.train_metrics = metrics.clone(prefix = "train/")
-        self.val_metrics = metrics.clone(prefix = "val/")
-        self.test_metrics = metrics.clone(prefix = "test/")
-
-        self.val_losses: list[float] = list()
-        self.test_losses: list[float] = list()
-        # self.val_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)
-        # self.test_confusion_matrix = self.config.get_metric("confusion_matrix", metric_params)       
     
     def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C' 
@@ -68,41 +51,54 @@ class ClassificationModule(LightningModule):
     
     def training_step(self, batch, batch_idx):
         preds, labels, loss = self._forward(batch) 
-        self.train_metrics.update(preds, labels)
-
-        # NOTE: "train/loss" must have on_step = True and on_epoch = True
-        self.log("train/loss", loss, on_epoch = True, on_step = True, batch_size = self.batch_size)
-        self.log("lr", self.learning_rate, on_step = False, on_epoch = True)
-        self.log_dict(self.train_metrics, on_epoch = True, batch_size = self.batch_size)
-        return loss
-
+        self.train_metric.update(preds, labels)
+        self.log("train/loss", loss, on_step = True, on_epoch = False)
+        self.log(f"train/{self.config.metric}", self.train_metric, on_step = True, on_epoch = False)
+        return {"preds": preds, "loss": loss}
+    
     def validation_step(self, batch, batch_idx):
         preds, labels, loss = self._forward(batch) 
-        self.val_losses.append(loss)
-        self.val_metrics.update(preds, labels)
-        self.val_confusion_matrix.update(preds, labels)
-        return preds 
-
-    def on_validation_epoch_end(self):
-        self.log("val/loss", torch.tensor(self.val_losses).mean())
-        self.log_dict(self.val_metrics.compute())
-        self.val_losses.clear()
-        self.val_metrics.reset()
-        self.val_confusion_matrix.reset()
+        self.val_metric.update(preds, labels)
+        self.log("val/loss", loss, on_step = False, on_epoch = True)
+        self.log(f"val/{self.config.metric}", self.val_metric, on_step = False, on_epoch = True)
+        return {"preds": preds, "loss": loss}
 
     def test_step(self, batch, batch_idx):
         preds, labels, loss = self._forward(batch) 
-        self.test_losses.append(loss)
-        self.test_metrics.update(preds, labels)
-        self.test_confusion_matrix.update(preds, labels)
-        return preds 
+        self.test_metric.update(preds, labels)
+        self.log("test/loss", loss, on_step = False, on_epoch = True)
+        self.log(f"test/{self.config.metric}", self.test_metric, on_step = False, on_epoch = True)
+        return {"preds": preds, "loss": loss}
 
-    def on_test_epoch_end(self):
-        self.log("test/loss", torch.tensor(self.test_losses).mean())
-        self.log_dict(self.test_metrics.compute())
-        self.test_losses.clear()
-        self.test_metrics.reset()
-        self.test_confusion_matrix.reset()
+    # self.log("lr", self.learning_rate, on_step = False, on_epoch = True)
+    # self.log_dict(self.train_metrics, on_epoch = True, batch_size = self.batch_size)
+    # def validation_step(self, batch, batch_idx):
+        # preds, labels, loss = self._forward(batch) 
+        # self.val_losses.append(loss)
+        # self.val_metrics.update(preds, labels)
+        # self.val_confusion_matrix.update(preds, labels)
+        # return preds 
+
+    # def on_validation_epoch_end(self):
+        # self.log("val/loss", torch.tensor(self.val_losses).mean())
+        # self.log_dict(self.val_metrics.compute())
+        # self.val_losses.clear()
+        # self.val_metrics.reset()
+        # self.val_confusion_matrix.reset()
+
+    # def test_step(self, batch, batch_idx):
+        # preds, labels, loss = self._forward(batch) 
+        # self.test_losses.append(loss)
+        # self.test_metrics.update(preds, labels)
+        # self.test_confusion_matrix.update(preds, labels)
+        # return preds 
+
+    # def on_test_epoch_end(self):
+        # self.log("test/loss", torch.tensor(self.test_losses).mean())
+        # self.log_dict(self.test_metrics.compute())
+        # self.test_losses.clear()
+        # self.test_metrics.reset()
+        # self.test_confusion_matrix.reset()
 
 
 

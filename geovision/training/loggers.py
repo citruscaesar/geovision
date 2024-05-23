@@ -2,15 +2,66 @@ from typing import Any, Mapping, Literal
 
 import h5py
 import torch
+import torchmetrics
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from itertools import count
 from lightning import Callback, LightningModule, Trainer
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 from geovision.data.dataset import Dataset
 from geovision.logging import get_logger
 from geovision.io.local import get_new_dir, get_experiments_dir
+from .metrics import get_classification_metrics_df
+
+class ModelOutputLogger:
+    def __init__(self, split: Literal["val", "test"], trainer: Trainer, pl_module: LightningModule):
+        match split:
+            case "val":
+                self.dataset = trainer.val_dataloaders.dataset
+            case "test":
+                self.dataset = trainer.test_dataloaders.dataset
+            case _:
+                raise ValueError(f":split must be one of val or test, got {split}")
+        self.config = pl_module.config
+        self.experiments_dir = get_experiments_dir(pl_module.config)
+        self.output_file_path = get_new_dir(self.experiments_dir, f"{split}_logs") / f"epoch={trainer.current_epoch}_step={trainer.global_step}_outputs.h5"
+        self.output_file_idx = count()
+        self.setup_logfile()
+
+    def setup_logfile(self):
+        num_eval_samples = len(self.dataset)
+        num_output_classes = self.dataset.num_classes
+        with h5py.File(self.output_file_path, 'w') as f:
+            f.create_dataset("probs", (num_eval_samples, num_output_classes), np.float32)
+            f.create_dataset("labels", (num_eval_samples), np.uint8)
+            f.create_dataset("df_idxs", (num_eval_samples), np.uint8)
+    
+    def log(self, outputs: torch.Tensor, batch: tuple):
+        probs = torch.softmax(outputs, 1).detach().cpu().numpy().astype(np.float32)
+        labels = batch[1].cpu().numpy().astype(np.uint8)
+        df_idxs = batch[2].cpu().numpy().astype(np.uint8)
+        with h5py.File(self.output_file_path, "r+") as f:
+            for i, out_idx in zip(range(len(probs)), self.output_file_idx):
+                f["probs"][out_idx] = probs[i]
+                f["labels"][out_idx] = labels[i]
+                f["df_idxs"][out_idx] = df_idxs[i]
+
+    @property
+    def probs(self) -> torch.Tensor:
+        with h5py.File(self.output_file_path, "r") as f:
+            return torch.tensor(f["probs"][:])
+    
+    @property
+    def labels(self) -> torch.Tensor:
+        with h5py.File(self.output_file_path, "r") as f:
+            return torch.tensor(f["labels"][:])
+
+    @property
+    def df_idxs(self) -> torch.Tensor:
+        with h5py.File(self.output_file_path, "r") as f:
+            return torch.tensor(f["df_idxs"][:])
 
 class ClassificationMetricsLogger(Callback):
     # store model output logits in memory in a pre-reserved numpy array during eval step
@@ -30,72 +81,30 @@ class ClassificationMetricsLogger(Callback):
                 self.csv_logger = logger
             elif isinstance(logger, WandbLogger):
                 self.wandb_logger = logger
-
-        #pre-allocate nxk array
-
     
     def on_validation_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.logits_file_path = self.get_logits_file_path("val", trainer)
-        self.create_logits_file("val", trainer)
-        self.logs_dir = self.logits_file_path.parent
+        self.output_logger = ModelOutputLogger("val", trainer, pl_module)
 
     def on_test_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.logits_file_path = self.get_logits_file_path("test", trainer)
-        self.create_logits_file("test", trainer)
-        self.logs_dir = self.logits_file_path.parent
-    
-    def on_validation_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        pass
+        self.output_logger = ModelOutputLogger("test", trainer, pl_module)
     
     def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
-        self.write_batch_to_logits_file(outputs, batch, batch_idx)
+        self.output_logger.log(outputs["preds"], batch)
     
     def on_test_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
-        self.write_batch_to_logits_file(outputs, batch, batch_idx)
+        self.output_logger.log(outputs["preds"], batch)
 
-    def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-    
     def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        logits, labels, df_idxs = self.read_from_logits_file()
-        confusion_matrix = torchmetrics.functional.confusion_matrix(logits, labels, )
+        confusion_matrix = torchmetrics.functional.confusion_matrix(
+            preds = self.output_logger.probs,
+            target = self.output_logger.labels,
+            task = "multiclass" if self.config.dataset.num_classes > 2 else "binary",
+            num_classes = self.config.dataset.num_classes,
+        )
+        metrics_df = get_classification_metrics_df(confusion_matrix.numpy(), self.config.dataset.class_names)
+        print(trainer.current_epoch, trainer.global_step)
+        display(metrics_df)
 
-    def get_logits_file_path(self, mode: Literal["val", "test"], trainer: Trainer):
-        return get_new_dir(self.experiments_dir, f"{mode}_logs") / f"epoch={trainer.current_epoch}_step={trainer.global_step}_logits.h5"
-
-    def create_logits_file(self, mode: Literal["val", "test"], trainer: Trainer):
-        match mode:
-            case "val":
-                dataset = trainer.val_dataloaders.dataset # type: ignore
-            case "test":
-                dataset = trainer.test_dataloaders.dataset # type: ignore
-            case _:
-                raise ValueError("mode must be either val or test")
-
-        self.logits_file_idx = 0
-        num_eval_samples = len(dataset)
-        num_output_classes = dataset.num_classes
-        with h5py.File(self.logits_file_path, 'w') as f:
-            f.create_dataset("logits", (num_eval_samples, num_output_classes), np.float32)
-            f.create_dataset("labels", (num_eval_samples), np.uint8)
-            f.create_dataset("df_idxs", (num_eval_samples), np.uint8)
-    
-    def write_batch_to_logits_file(self, outputs, batch, batch_idx):
-        assert isinstance(outputs, torch.Tensor), f"expected a Tensor, got {type(outputs)}"
-        logits = torch.softmax(outputs, 1).detach().cpu().numpy().astype(np.float32)
-        labels = batch[1].cpu().numpy().astype(np.uint8)
-        df_idxs = batch[2].cpu().numpy().astype(np.uint8)
-        print(f"batch #{batch_idx}")
-        with h5py.File(self.logits_file_path, "r+") as f:
-            for i in range(len(logits)):
-                f["logits"][self.logits_file_idx] = logits[i]
-                f["labels"][self.logits_file_idx] = labels[i]
-                f["df_idxs"][self.logits_file_idx] = df_idxs[i]
-                self.logits_file_idx += 1
-    
-    def read_from_logits_file(self):
-        with h5py.File(self.logits_file_path, "r") as f:
-            return f["logits"][:], f["labels"][:], f["df_idxs"][:]
-    
 class SegmentationMetricsLogger(Callback):
     pass
 
