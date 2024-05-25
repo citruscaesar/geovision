@@ -5,12 +5,16 @@ from lightning import LightningModule
 from torchmetrics import MetricCollection
 from geovision.config.basemodels import ExperimentConfig
 
+from torchvision.models import alexnet, AlexNet_Weights
+
 class ClassificationModule(LightningModule):
     def __init__(self, config: ExperimentConfig) -> None:
         super().__init__()
         
         self.config = config
         self.model = config.nn(num_classes = config.dataset.num_classes, **config.nn_params.model_dump()) #type: ignore
+        #self.model = alexnet(weights = AlexNet_Weights.IMAGENET1K_V1) 
+        #self.model.classifier[-1] = torch.nn.Linear(4096, 10)
         self.criterion = config.criterion(**config.criterion_params) #type: ignore
 
         self.metric_params = {
@@ -33,7 +37,9 @@ class ClassificationModule(LightningModule):
     
     def configure_optimizers(self):
         self.config.optimizer_params["params"] = self.model.parameters()
-        return {"optimizer": self.config.optimizer(**self.config.optimizer_params)}
+        optimizer = self.config.optimizer(**self.config.optimizer_params)
+        # lr_scheduler = {"scheduler": None, "monitor": self.config.metric, "frequency": None} 
+        return optimizer #, [lr_scheduler]
     
     def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C' 
@@ -52,23 +58,21 @@ class ClassificationModule(LightningModule):
     def training_step(self, batch, batch_idx):
         preds, labels, loss = self._forward(batch) 
         self.train_metric.update(preds, labels)
-        self.log("train/loss", loss, on_step = True, on_epoch = False)
-        self.log(f"train/{self.config.metric}", self.train_metric, on_step = True, on_epoch = False)
+        self.log("train/loss", loss, on_step = True, on_epoch = True)
+        self.log(f"train/{self.config.metric}", self.train_metric, on_step = True, on_epoch = True)
         return {"preds": preds, "loss": loss}
     
     def validation_step(self, batch, batch_idx):
         preds, labels, loss = self._forward(batch) 
-        self.val_metric.update(preds, labels)
-        self.log("val/loss", loss, on_step = False, on_epoch = True)
-        self.log(f"val/{self.config.metric}", self.val_metric, on_step = False, on_epoch = True)
+        self.log("val/loss", loss, on_step = True, on_epoch = True)
+        self.log(f"val/{self.config.metric}", self.val_metric(preds, labels), on_step = True, on_epoch = True)
         return {"preds": preds, "loss": loss}
 
-    def test_step(self, batch, batch_idx):
-        preds, labels, loss = self._forward(batch) 
-        self.test_metric.update(preds, labels)
-        self.log("test/loss", loss, on_step = False, on_epoch = True)
-        self.log(f"test/{self.config.metric}", self.test_metric, on_step = False, on_epoch = True)
-        return {"preds": preds, "loss": loss}
+    # def test_step(self, batch, batch_idx):
+        # preds, labels, loss = self._forward(batch) 
+        # self.log("test/loss", loss, on_step = True, on_epoch = True)
+        # self.log(f"test/{self.config.metric}", self.test_metric(preds, labels), on_step = True, on_epoch = True)
+        # return {"preds": preds, "loss": loss}
 
     # self.log("lr", self.learning_rate, on_step = False, on_epoch = True)
     # self.log_dict(self.train_metrics, on_epoch = True, batch_size = self.batch_size)

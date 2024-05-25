@@ -39,6 +39,7 @@ def get_valid_dir_err(*args, empty_ok: bool = False) -> Path:
 
 def get_valid_file_err(*args, valid_extns: Optional[tuple[str, ...]] = None) -> Path:
     file_path = Path(*args).resolve().expanduser()
+    # TODO: change this, if file path does not match exactly, is_file will fail anyways
     if not file_path.is_file():
         raise FileNotFoundError(f"{file_path} does not point to a local file")
     if valid_extns is not None:
@@ -71,3 +72,20 @@ def get_dataset_dir(root: str | Path, dir_name: str, invalid_ok = False) -> Path
             return _validate("imagefolder", "masks")
         case _:
             raise ValueError("invalid :dir_name, must be one of archives, imagefolder, hdf5, images, masks")
+
+def get_ckpt_path(config, epoch: int = -1, step: int = -1) -> Optional[Path]:
+    try:
+        experiments_dir = get_valid_dir_err(get_experiments_dir(config) / "checkpoints", empty_ok=False)
+        if epoch == -1 and step == -1:
+            ckpts = sorted(experiments_dir.glob("epoch=*_step=*.ckpt"))
+            display(ckpts) # noqa # type: ignore
+            return ckpts[-1]
+        elif epoch != -1 and step == -1:
+            ckpts = sorted(experiments_dir.glob(f"epoch={epoch}_step=*.ckpt"))
+            display(ckpts) # noqa # type: ignore
+            return ckpts[-1]
+        else:
+            return get_valid_file_err(experiments_dir, f"epoch={epoch}_step={step}.ckpt")
+    except OSError:
+        display("no matching ckpt found, returning None") # noqa # type: ignore
+        return None

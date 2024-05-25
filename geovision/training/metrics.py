@@ -1,4 +1,6 @@
+from typing import Literal
 from numpy.typing import NDArray
+
 import numpy as np
 import pandas as pd
 
@@ -34,3 +36,17 @@ def get_classification_metrics_df(confusion_matrix: NDArray, class_names: tuple)
     df.loc[len(df.index)] = ["weighted", *weighted_metrics, num_samples]
     df.set_index("class_name", inplace = True)
     return df
+
+def get_classification_metrics_dict(metrics_df: pd.DataFrame) -> dict[str, float]:
+    metrics = dict()
+    for class_name, row in metrics_df.iterrows(): # type: ignore
+        if str(class_name) == "accuracy":
+            metrics["accuracy"] = row["precision"]
+            continue
+        class_name = str(class_name).replace(' ', '_') + '_'
+        metrics[class_name + "precision"] = row["precision"]
+        metrics[class_name + "recall"] = row["recall"]
+        metrics[class_name + "iou"] = row["iou"]
+        metrics[class_name + "f1"] = row["f1"]
+        metrics[class_name + "support"] = int(row["support"])
+    return metrics

@@ -1,7 +1,7 @@
 # name of the experiment folder
-name: can imagenette work with grace 
+name: testing plotting 
 # name of the dataset to load from geovision.data
-dataset: imagenette_imagefolder_classification
+dataset: imagenette_hdf5_classification
 # path to the dataset directory, must exist
 dataset_root: ~/datasets/imagenette
 # optional path to the dataset.csv file, must exist
@@ -34,7 +34,7 @@ dataloader_params:
   batch_size: 64 
   gradient_accumulation: 1
   # degree of multiprocessing
-  num_workers: 2
+  num_workers: 6 
   persistent_workers: True
   pin_memory: True
 
@@ -50,7 +50,7 @@ criterion_params:
 
 optimizer: adam
 optimizer_params:
-  lr: 1.0e-05
+  lr: 5.0e-06
 
 # params to configure the primary metric monitored during train/eval 
 metric: iou 
