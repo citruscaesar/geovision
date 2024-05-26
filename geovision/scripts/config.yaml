@@ -1,5 +1,5 @@
 # name of the experiment folder
-name: testing plotting 
+name:  
 # name of the dataset to load from geovision.data
 dataset: imagenette_hdf5_classification
 # path to the dataset directory, must exist
@@ -34,7 +34,7 @@ dataloader_params:
   batch_size: 64 
   gradient_accumulation: 1
   # degree of multiprocessing
-  num_workers: 6 
+  num_workers: 4 
   persistent_workers: True
   pin_memory: True
 
@@ -42,18 +42,20 @@ dataloader_params:
 nn: alexnet 
 nn_params:
   num_layers: null 
-  weights: imagenet
+  weights: imagenet 
 
 criterion: cross_entropy
 criterion_params:
   reduction: mean
 
-optimizer: adam
+optimizer: sgd 
 optimizer_params:
-  lr: 5.0e-06
+   lr: 1.0e-5
+   momentum: 0.9
+   weight_decay: 5.0e-4
 
 # params to configure the primary metric monitored during train/eval 
-metric: iou 
+metric: f1 
 
 # specify params to configure transformations and augmentatations
 # _transform: squence of strings parsed to torchvision.transforms

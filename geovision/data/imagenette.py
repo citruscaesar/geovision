@@ -290,7 +290,7 @@ class ImagenetteHDF5Classification(Dataset):
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
         image = self._transforms.image_transform(image) # type: ignore
-        if self.split == "train" and self._transforms.common_transform is not None:
+        if self._split == "train":
             image = self._transforms.common_transform(image)
         return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore
 

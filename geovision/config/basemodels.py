@@ -3,24 +3,20 @@ from typing import Any, Callable, Optional
 import yaml # type: ignore
 import torch
 import torchmetrics
+import names_generator
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, field_validator 
 from torchvision.transforms.v2 import Transform # type: ignore
-
 from geovision.io.local import get_valid_file_err
 from geovision.data.dataset import Dataset, DatasetConfig, TransformsConfig
-from geovision.data.imagenette import (
-    ImagenetteImagefolderClassification,
-    ImagenetteHDF5Classification
-)
-from geovision.data.imagenet import (
-    ImagenetImagefolderClassification,
-    ImagenetHDF5Classification
-)
-from geovision.models import (
-    alexnet,
-    resnet
-)
+
+from .parsers import (
+    get_dataset,
+    get_model,
+    get_criterion,
+    get_optimizer,
+    get_metric
+) 
 
 class DataLoaderConfig(BaseModel):
     batch_size: int
@@ -29,41 +25,116 @@ class DataLoaderConfig(BaseModel):
     persistent_workers: bool
     pin_memory: bool
 
-class NNParams(BaseModel):
+class NNConfig(BaseModel):
     weights: str
-    num_layers: int | None
+    dropout: float | None = None
+    num_layers: int | None = None
+
+class CriterionParams(BaseModel):
+    reduction: str 
+    weight: tuple | None = None
+    label_smoothing: float | None = None
+    ignore_index: int | None = None
+
+    #CTCLoss
+    blank: int | None = None
+    zero_infinity: bool | None = None
+    #NLLLoss (Poisson, Gaussian)
+    log_input: bool | None = None
+    eps: bool | None = None
+    full: bool | None = None
+    #KLDiv
+    log_target: bool | None = None
+    #BCEWithLogitsLoss
+    pos_weight: tuple | None = None
+    #MarginLoss (Multi, Triplet)
+    p: int | None = None
+    margin: float | None = None
+    swap: bool | None = None
+    #HuberLoss
+    delta: float | None = None
+    #SmoothL1Loss
+    beta: float | None = None
+    distance_function: str | None = None
+
+class OptimizerParams(BaseModel):
+    lr: float
+    foreach: bool | None = None
+    maximize: bool | None = None
+    capturable: bool | None = None
+    differentiable: bool | None = None
+    fused: bool | None = None
+
+    #SGD
+    momentum: float | None = None
+    weight_decay: float | None = None
+    dampening: float | None = None
+    nesterov: bool | None = None
+
+    #Adam
+    betas: tuple | None = None
+    eps: float | None = None
+    amsgrad: bool | None = None
+
+    rho: float | None = None
+    lr_decay: float | None = None
+
+    #ASGD
+    lambd: float | None = None
+    alpha: float | None = None
+    t0: float | None = None
+
+    #LBFGS
+    max_iter: int | None = None
+    max_eval: int| None = None
+    tolerance_grad: float | None = None
+    tolerance_change: float | None = None
+    history_search: int | None = None
+    line_search_fn: str | None = None
+
+    #NAdam
+    momentum_decay: float | None = None
+    decoupled_weight_decay: bool | None = None
+
+    #RMSProp
+    centered: bool | None = None
+
+    #RProp
+    etas: tuple | None = None
+    step_sizes: tuple | None = None
 
 class ExperimentConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed = True)
-    name: str
+    name: str | None = None
     dataset: Dataset | str
     dataset_root: Path | str
-    dataset_df: Path | str | None
-    dataset_params: DatasetConfig | None
+    dataset_df: Path | str | None = None
+    dataset_params: DatasetConfig | None = None
+    transforms: TransformsConfig | None = None
     dataloader_params: DataLoaderConfig
     nn: torch.nn.Module | str
-    nn_params: NNParams 
+    nn_params: NNConfig 
     criterion: torch.nn.Module | str
-    criterion_params: dict
+    criterion_params: CriterionParams 
     optimizer: torch.optim.Optimizer | str
-    optimizer_params: dict
+    optimizer_params: OptimizerParams 
     metric: str
-    transforms: TransformsConfig | None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, name: str | None = None) -> str:
+        if name is None or name == "":
+            return names_generator.generate_name() 
+        return name
 
     @field_validator("dataset")
     @classmethod
-    def get_dataset(cls, name: str) -> Dataset:
-        datasets = {
-            "imagenette_imagefolder_classification": ImagenetteImagefolderClassification,
-            "imagenette_hdf5_classification": ImagenetteHDF5Classification,
-            "imagenet_imagefolder_classification": ImagenetImagefolderClassification,
-            "imagenet_hdf5_classification": ImagenetHDF5Classification 
-        }
-        return cls._get_fn_from_table(datasets, name, "dataset") #type: ignore
-
+    def validate_dataset(cls, name: str) -> Dataset:
+        return get_dataset(name)
+    
     @field_validator("dataset_root")
     @classmethod
-    def get_dataset_root(cls, root: str | Path) -> Path:
+    def validate_dataset_root(cls, root: str | Path) -> Path:
         root = Path(root).expanduser().resolve()
         if not root.exists():
             raise FileNotFoundError(f"dataset root not found on local fs, got {root}")
@@ -71,86 +142,45 @@ class ExperimentConfig(BaseModel):
 
     @field_validator("dataset_df")
     @classmethod
-    def get_dataset_df(cls, df: str | Path | None) -> Path | None:
-        if df is not None:
-            return get_valid_file_err(df, valid_extns=(".csv",))
-        return None
+    def validate_dataset_df(cls, df: str | Path | None = None) -> Path | None:
+        return get_valid_file_err(df, valid_extns=(".csv",)) if df is not None else None
 
     @field_validator("nn")
     @classmethod
-    def get_model(cls, name: str) -> Callable:
-        models = {
-            "alexnet": alexnet,
-            "resnet": resnet 
-        }
-        return cls._get_fn_from_table(models, name, "model")
+    def validate_nn(cls, name: str) -> Callable:
+        return get_model(name)
 
     @field_validator("criterion")
     @classmethod
-    def get_criterion(cls, name: str) -> Callable:
-        criterions = {
-            "binary_cross_entropy": torch.nn.BCEWithLogitsLoss,
-            "cross_entropy": torch.nn.CrossEntropyLoss,
-            "mean_squared_error": torch.nn.MSELoss,
-        }
-        return cls._get_fn_from_table(criterions, name, "criterion") # type: ignore
-
+    def validate_criterion(cls, name: str) -> Callable:
+        return get_criterion(name)
+        
     @field_validator("optimizer")
     @classmethod
-    def get_optimizer(cls, name: str) -> Callable:
-        optimizers = {
-            "sgd": torch.optim.SGD,
-            "adam": torch.optim.Adam,
-        }
-        return cls._get_fn_from_table(optimizers, name, "optimizer") # type: ignore
+    def validate_optimizer(cls, name: str) -> Callable:
+        return get_optimizer(name)
     
     @field_validator("metric")
     @classmethod
     def validate_metric(cls, name: str) -> str:
-        metrics = cls._get_metrics_dict()
-        if name not in metrics:
-            raise NotImplementedError(f"metric {name} not yet implemented, must be from {metrics.keys()}")
+        get_metric(name)
         return name
     
     @classmethod
-    def get_metric(cls, name: str, init_params: dict) -> torchmetrics.Metric:
-        metrics = cls._get_metrics_dict()
-        if name not in metrics:
-            raise NotImplementedError(f"metric {name} not yet implemented, must be from {metrics.keys()}")
-        return metrics[name](**init_params)
+    def get_metric(cls, name: str, metric_params: dict[str, str | int]) -> torchmetrics.Metric:
+        return get_metric(name)(**metric_params) 
 
-    @staticmethod
-    def _get_fn_from_table(fn_table: dict["str", Callable], name: str, errname: str) -> Callable:
-        if name not in fn_table:
-            raise NotImplementedError(f"{errname} must be one of {fn_table.keys()}, got {name}")
-        else:
-            return fn_table[name]
-    
     @classmethod
     def from_yaml(cls, config_file: str | Path, transforms: Optional[dict[str, Transform | None]] = None):
-        config_dict = cls._get_config_dict(config_file)
-        transforms_dict = cls._get_transforms_dict(transforms) 
+
+        def _get_config_dict(config_file: str | Path) -> dict[str, Any]:
+            config_file = get_valid_file_err(config_file, valid_extns=(".yaml",)) 
+            with open(config_file, 'r') as config:
+                return yaml.safe_load(config)
+
+        def _get_transforms_dict(transforms: Optional[dict[str, Transform | None]] = None) -> dict[str, Any]: 
+            return {"transforms": transforms}
+
+        config_dict = _get_config_dict(config_file)
+        transforms_dict = _get_transforms_dict(transforms) 
         return cls(**(config_dict | transforms_dict))
-    
-    @staticmethod
-    def _get_metrics_dict() -> dict[str, Callable]:
-        return {
-            "accuracy": torchmetrics.Accuracy,
-            "dice": torchmetrics.F1Score,
-            "f1": torchmetrics.F1Score,
-            "iou": torchmetrics.JaccardIndex,
-            "confusion_matrix": torchmetrics.ConfusionMatrix,
-            "cohen_kappa": torchmetrics.CohenKappa,
-            "auroc": torchmetrics.AUROC,
-        }
-
-    @staticmethod 
-    def _get_config_dict(config_file: str | Path) -> dict[str, Any]:
-        config_file = get_valid_file_err(config_file, valid_extns=(".yaml",)) 
-        with open(config_file, 'r') as config:
-            return yaml.safe_load(config)
-    
-    @staticmethod
-    def _get_transforms_dict(transforms: Optional[dict[str, Transform | None]] = None) -> dict[str, Any]: 
-        return {"transforms": transforms}
-

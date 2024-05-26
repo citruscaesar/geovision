@@ -73,19 +73,32 @@ def get_dataset_dir(root: str | Path, dir_name: str, invalid_ok = False) -> Path
         case _:
             raise ValueError("invalid :dir_name, must be one of archives, imagefolder, hdf5, images, masks")
 
-def get_ckpt_path(config, epoch: int = -1, step: int = -1) -> Optional[Path]:
-    try:
-        experiments_dir = get_valid_dir_err(get_experiments_dir(config) / "checkpoints", empty_ok=False)
-        if epoch == -1 and step == -1:
-            ckpts = sorted(experiments_dir.glob("epoch=*_step=*.ckpt"))
-            display(ckpts) # noqa # type: ignore
-            return ckpts[-1]
-        elif epoch != -1 and step == -1:
-            ckpts = sorted(experiments_dir.glob(f"epoch={epoch}_step=*.ckpt"))
-            display(ckpts) # noqa # type: ignore
-            return ckpts[-1]
+def get_ckpt_path(config, epoch: int = -1, step: int = -1) -> Optional[Path | str]:
+    def display_ckpts_list(ckpts) -> None:
+        names = [ckpt.name for ckpt in ckpts]
+        names[-1] = f"*{names[-1]}"
+        display(f"found ckpts: {names}") # noqa # type: ignore
+
+    if epoch < -1:
+        raise ValueError(f"epoch must be >= -1, got{epoch}")
+    if step < -1:
+        raise ValueError(f"step must be >= -1, got {step}")
+
+    ckpts = sorted(get_experiments_dir(config).rglob("*.ckpt"))
+    if len(ckpts) == 0:
+        print("no ckpt found in experiments, returning None")
+    elif epoch == -1 and step == -1:
+        display_ckpts_list(ckpts)
+        return ckpts[-1] 
+    elif epoch != -1 and step == -1:
+        ckpts = [ckpt for ckpt in ckpts if f"epoch={epoch}" in ckpt.name]
+        display_ckpts_list(ckpts)
+        return ckpts[-1]
+    else:
+        ckpts = [ckpt for ckpt in ckpts if f"epoch={epoch}_step={step}" in ckpt.name]
+        if len(ckpts) == 0:
+            print("found no matching ckpt, returning None")
+            return None
         else:
-            return get_valid_file_err(experiments_dir, f"epoch={epoch}_step={step}.ckpt")
-    except OSError:
-        display("no matching ckpt found, returning None") # noqa # type: ignore
-        return None
+            display_ckpts_list(ckpts)
+            return ckpts[-1]

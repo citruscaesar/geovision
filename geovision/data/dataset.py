@@ -170,13 +170,17 @@ class Validator:
         """returns a TransformsConfig with missing :transforms replaced with :default_transforms"""
         if transforms is None:
             logger.info("did not receive :transforms, using default transforms")
-            return default_transforms
+            transforms = default_transforms
         else:
-            return TransformsConfig(
+            transforms = TransformsConfig(
                 image_transform = transforms.image_transform or default_transforms.image_transform,
                 target_transform = transforms.target_transform or default_transforms.target_transform,
                 common_transform = transforms.common_transform or default_transforms.common_transform
             )
+        logger.info(f"applying image_transforms: {transforms.image_transform}")
+        logger.info(f"applying target_transforms: {transforms.target_transform}")
+        logger.info(f"applying common_transforms: {transforms.common_transform}")
+        return transforms
     
     @staticmethod
     def _get_df(

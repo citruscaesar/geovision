@@ -5,7 +5,7 @@ import torchvision # type: ignore
 def alexnet(
         num_classes: int = 1000,
         dropout: float = 0.5,
-        weights: Optional[Literal["imagenet", "he"]] = None,
+        weights: Optional[Literal["imagenet", "default"]] = "default",
         **kwargs 
     ) -> torch.nn.Module:
 

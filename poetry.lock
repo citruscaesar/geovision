@@ -993,6 +993,21 @@ click = ">=4.0"
 test = ["pytest-cov"]
 
 [[package]]
+name = "cmdkit"
+version = "2.7.5"
+description = "A command-line utility toolkit for Python."
+optional = false
+python-versions = "<4.0,>=3.8"
+files = [
+    {file = "cmdkit-2.7.5-py3-none-any.whl", hash = "sha256:1562e4fc40cba195afe62478b51bac0988896851d5eca45335421131df9698fa"},
+    {file = "cmdkit-2.7.5.tar.gz", hash = "sha256:b7bf4a9b8cc5737eb5e16ac8675c9edcf0ddd99b0b9aa7672a3fb2694f44ca12"},
+]
+
+[package.dependencies]
+pyyaml = ">=6.0.1,<7.0.0"
+toml = ">=0.10.2,<0.11.0"
+
+[[package]]
 name = "colorama"
 version = "0.4.4"
 description = "Cross-platform colored terminal text."
@@ -3358,6 +3373,20 @@ files = [
     {file = "mypy_extensions-1.0.0-py3-none-any.whl", hash = "sha256:4392f6c0eb8a5668a69e23d168ffa70f0be9ccfd32b5cc2d26a34ae5b844552d"},
     {file = "mypy_extensions-1.0.0.tar.gz", hash = "sha256:75dbf8955dc00442a438fc4d0666508a9a97b6bd41aa2f0ffe9d2f2725af0782"},
 ]
+
+[[package]]
+name = "names-generator"
+version = "0.2.0"
+description = "Clone of the Moby/Docker random name generator as a Python package."
+optional = false
+python-versions = "*"
+files = [
+    {file = "names_generator-0.2.0-py3-none-any.whl", hash = "sha256:693e8e48e9a54a2a8f714b01d1bd70945743a15d4587059e7e4e16efc361be11"},
+    {file = "names_generator-0.2.0.tar.gz", hash = "sha256:de60e354b8ca8f2d1ce0816079d3ba569417371867b94328021f03c9dd47a5be"},
+]
+
+[package.dependencies]
+cmdkit = ">=2.7.4"
 
 [[package]]
 name = "nbclient"
@@ -6599,6 +6628,17 @@ docs = ["setuptools-rust", "sphinx", "sphinx-rtd-theme"]
 testing = ["black (==22.3)", "datasets", "numpy", "pytest", "requests", "ruff"]
 
 [[package]]
+name = "toml"
+version = "0.10.2"
+description = "Python Library for Tom's Obvious, Minimal Language"
+optional = false
+python-versions = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*"
+files = [
+    {file = "toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b"},
+    {file = "toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f"},
+]
+
+[[package]]
 name = "torch"
 version = "2.2.2"
 description = "Tensors and Dynamic neural networks in Python with strong GPU acceleration"
@@ -7394,4 +7434,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "ed5aaae8d9b3413d8ad1b274d9696ac61670dcc8f86ae9dbc2a7926e212579ba"
+content-hash = "d83f37ba3e66edb01a9abed9def884793dd279b4b33a46dea22325689c4a2169"
