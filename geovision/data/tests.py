@@ -14,7 +14,7 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
         max_idx = len(dl) if limit_batches == 0 or limit_batches > len(dl) else limit_batches
         batch_shape: tuple = tuple()
         epoch_idxs: set = set()
-        for batch_idx, batch in tqdm(enumerate(dl), total = len(dl), desc = f"testing {split} dataloader"):
+        for batch_idx, batch in tqdm(enumerate(dl), total = max_idx, desc = f"testing {split} dataloader"):
             if batch_idx > max_idx:
                 break
             if batch_idx == 0:

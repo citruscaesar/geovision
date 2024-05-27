@@ -343,26 +343,29 @@ class TabularSampler:
 
         test = (df
                 .groupby("split_on", group_keys=False)
-                .apply(lambda x: x.sample( # type: ignore
-                        frac = test_frac, random_state = random_seed, axis = 0)
+                .apply(func = lambda x: x.sample(
+                        frac = test_frac, random_state = random_seed, axis = 0),
+                        include_groups = False
                     )
                 .assign(split = "test")) 
                
         val = (df
                 .drop(test.index, axis = 0)
                 .groupby("split_on", group_keys=False)
-                .apply(lambda x: x.sample( # type: ignore
-                        frac = val_frac / (1-test_frac), random_state = random_seed, axis = 0)
+                .apply(func = lambda x: x.sample( # type: ignore
+                        frac = val_frac / (1-test_frac), random_state = random_seed, axis = 0),
+                        include_groups = False
                     )
                 .assign(split = "val"))
 
         train = (df
                 .drop(test.index, axis = 0)
                 .drop(val.index, axis = 0)
+                .drop(columns = "split_on")
                 .assign(split = "train"))
 
-        return (concat([train, val, test])
-                .reset_index(drop = True))
+        # TODO: DO NOT use .reset_index(), since data is stored in the exact order as :df
+        return concat([train, val, test]).sort_index()
 
     @staticmethod
     def _get_random_split_df(

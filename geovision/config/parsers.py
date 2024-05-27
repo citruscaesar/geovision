@@ -20,6 +20,16 @@ def get_dataset(name: str) -> Dataset:
     }
     return get_constructor_err(datasets, name) # type: ignore
 
+def get_task(dataset: Dataset) -> str:
+    task_str = dataset.name.split('_')[-1]
+    match task_str:
+        case "classification":
+            return "multiclass" if dataset.num_classes > 2 else "binary"
+        case "multilabelclassification":
+            return "multilabel"
+        case _:
+            raise ValueError(f"{dataset} has invalid task str, got {task_str}")
+
 def get_model(name: str) -> torch.nn.Module:
     models = {
         "alexnet": alexnet,

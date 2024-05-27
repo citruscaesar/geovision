@@ -1,5 +1,5 @@
 # name of the experiment folder
-name:  
+name: testing_plotting 
 # name of the dataset to load from geovision.data
 dataset: imagenette_hdf5_classification
 # path to the dataset directory, must exist
@@ -50,7 +50,7 @@ criterion_params:
 
 optimizer: sgd 
 optimizer_params:
-   lr: 1.0e-5
+   lr: 6.0e-6
    momentum: 0.9
    weight_decay: 5.0e-4
 

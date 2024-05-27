@@ -151,7 +151,7 @@ class Imagenette:
                 lambda x: class_synsets.index(x)))
             .assign(label_str = lambda df: df["label_idx"].apply(
                 lambda x: cls.class_names[x]))
-            .assign(split_on = lambda df: df["label_str"])
+            .assign(label_str = lambda df: df["label_str"])
             .reset_index(drop = True)
         )
     
@@ -274,10 +274,9 @@ class ImagenetteHDF5Classification(Dataset):
             default_df = Imagenette.get_dataset_df_from_hdf5(root),
             default_config = Imagenette.default_config,
         )
-        self._split_df = Validator._get_imagefolder_split_df(
+        self._split_df = Validator._get_hdf5_split_df(
             df = self._df,
             schema = self.split_df_schema,
-            root = self._root,
             split = self._split
         )
         
@@ -285,14 +284,31 @@ class ImagenetteHDF5Classification(Dataset):
         return len(self._split_df)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        idx_row = self.split_df.iloc[idx]
-        with h5py.File(self.root, mode = "r") as hdf5_file:
+        idx_row = self._split_df.iloc[idx]
+        with h5py.File(self._root, mode = "r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
         image = self._transforms.image_transform(image) # type: ignore
         if self._split == "train":
             image = self._transforms.common_transform(image)
         return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore
+
+    def _assign_train_test_val_splits(self, df: pd.DataFrame, val_split: float, test_split: float, random_seed: int) -> pd.DataFrame:
+        test = (df.groupby("label_str", group_keys=False)
+                  .apply(lambda x: x.sample(frac = test_split, random_state = random_seed, axis = 0)
+                  .assign(split = "test")))
+
+        val = (df.drop(test.index, axis = 0)
+                 .groupby("label_str", group_keys=False)
+                 .apply(lambda x: x.sample(frac = val_split / (1-test_split), random_state = random_seed, axis = 0)
+                 .assign(split = "val")))
+
+        train = (df.drop(test.index, axis = 0)
+                   .drop(val.index, axis = 0)
+                   .assign(split = "train"))
+
+        return pd.concat([train, val, test])
+
 
     @property
     def root(self):

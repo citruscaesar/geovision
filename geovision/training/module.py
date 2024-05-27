@@ -2,10 +2,8 @@ from typing import Any, Optional
 
 import torch
 from lightning import LightningModule
-from torchmetrics import MetricCollection
 from geovision.config.basemodels import ExperimentConfig
-
-from torchvision.models import resnet18, ResNet18_Weights 
+from geovision.config.parsers import get_task
 
 class ClassificationModule(LightningModule):
     def __init__(self, config: ExperimentConfig, model: Optional[torch.nn.Module] = None) -> None:
@@ -24,8 +22,8 @@ class ClassificationModule(LightningModule):
         self.criterion = config.criterion(**config.criterion_params.model_dump(exclude_none=True))
         self.metric_params = {
             # TODO: add option for task to be 'multilabel' from config.dataset.name.split('_')[-1]
-            "task": "multiclass" if self.config.dataset.num_classes > 2 else "binary",
-            "num_classes": self.config.dataset.num_classes,
+            "task": get_task(config.dataset),
+            "num_classes": config.dataset.num_classes,
         }
         # TODO: add option for multiple metrics to be tracked, return MetricCollection from get_metric and treat config.metric as a list
         self.train_metric = config.get_metric(config.metric, self.metric_params)
@@ -35,7 +33,7 @@ class ClassificationModule(LightningModule):
     def configure_optimizers(self):
         optimizer_params = self.config.optimizer_params.model_dump(exclude_none=True)
         optimizer_params["params"] = self.model.parameters()
-        optimizer = self.config.optimizer(**self.config.optimizer_params)
+        optimizer = self.config.optimizer(**optimizer_params)
         # lr_scheduler = {"scheduler": None, "monitor": self.config.metric, "frequency": None} 
         return optimizer #, [lr_scheduler]
     
