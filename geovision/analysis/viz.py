@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.axes import Axes 
 
 from geovision.data.dataset import Dataset
@@ -64,11 +65,51 @@ def plot_batch(dataset: Dataset, batch: tuple, batch_idx: int, save_to: Optional
         plt.clf()
         plt.close()
 
-def plot_confusion_matrix(ax: Axes, confusion_matrix: NDArray):
-    pass
+def plot_confusion_matrix(confusion_matrix: NDArray, save_to: Optional[Path] = None) -> Figure:
+    fig, ax = plt.subplots(1, 1, layout = "constrained", figsize = (10, 10))
+    _plot_confusion_matrix(ax, confusion_matrix)
+    if save_to is not None:
+        fig.savefig(save_to)
+    return fig
 
-def plot_metrics_table(ax: Axes, metrics_df: pd.DataFrame):
-    pass
+def plot_metrics_table(metrics_df: pd.DataFrame, save_to: Optional[Path] = None) -> Figure:
+    fig, ax = plt.subplots(1, 1, layout = "constrained", figsize = (10, 10))
+    _plot_metrics_table(ax, metrics_df)
+    if save_to is not None:
+        fig.savefig(save_to)
+    return fig
+
+def _plot_confusion_matrix(ax: Axes, confusion_matrix: NDArray):
+    num_classes = confusion_matrix.shape[0]
+
+    ax.grid(visible=False)
+    ax.imshow(confusion_matrix, cmap = "Blues")
+    ax.set_xlabel("Predicted Class", fontsize = 10)
+    ax.set_xticks(list(range(num_classes)))
+    ax.xaxis.set_label_position("top")
+
+    ax.set_ylabel("True Class", fontsize = 10)
+    ax.set_yticks(list(range(num_classes)))
+    ax.yaxis.set_label_position("left")
+
+    for r in range(num_classes):
+        for c in range(num_classes):
+            ax.text(y = r, x = c, s = str(confusion_matrix[r, c]), ha = "center", va = "center", fontsize=10)
+
+def _plot_metrics_table(ax: Axes, metrics_df: pd.DataFrame):
+    class_names = metrics_df.index[:-3]
+    table = ax.table(
+        cellText = metrics_df.round(3).values, # type: ignore
+        rowLabels = tuple(f"{i}: {c}" for i, c in enumerate(class_names)) + ("accuracy", "macro avg", "weighted avg"),
+        colLabels = ["precision", "recall", "jaccard", "f1", "support"],
+        cellLoc = "center",
+        rowLoc = "center",
+        loc = "center",
+        edges = "horizontal"
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10) 
+    ax.set_axis_off()
 
 def plot_experiment(experiment_dir: Path):
     # Summarize the experiment by plotting the train, val, test losses and monitored metric 

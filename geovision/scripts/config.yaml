@@ -34,9 +34,9 @@ dataloader_params:
   batch_size: 64 
   gradient_accumulation: 1
   # degree of multiprocessing
-  num_workers: 4 
+  num_workers: 8 
   persistent_workers: True
-  pin_memory: True
+  pin_memory: False
 
 # specify params to configure the models, loss and optimizers
 nn: alexnet 
@@ -50,7 +50,7 @@ criterion_params:
 
 optimizer: sgd 
 optimizer_params:
-   lr: 6.0e-6
+   lr: 1.0e-5
    momentum: 0.9
    weight_decay: 5.0e-4
 

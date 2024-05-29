@@ -6,6 +6,7 @@ import torch
 import torchmetrics
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from pathlib import Path
 from itertools import count
 from lightning import Callback, LightningModule, Trainer
@@ -14,6 +15,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from geovision.data.dataset import Dataset
 from geovision.logging import get_logger
 from geovision.io.local import get_new_dir, get_experiments_dir
+from geovision.analysis.viz import plot_confusion_matrix, plot_metrics_table
 from .metrics import get_classification_metrics_df, get_classification_metrics_dict
 
 class ModelOutputLogger:
@@ -102,7 +104,6 @@ class ClassificationMetricsLogger(Callback):
         self.experiments_dir = get_experiments_dir(config)
     
     def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
-        self.csv_logger, self.wandb_logger = None, None
         for logger in trainer.loggers:
             if isinstance(logger, CSVLogger):
                 self.csv_logger = logger
@@ -119,48 +120,47 @@ class ClassificationMetricsLogger(Callback):
         else:
             raise Exception("couldn't load df from datamodule.train/val/test_dataset") 
 
-        if self.csv_logger is not None:        
+        if hasattr(self, "csv_logger"):
             dataset_df.to_csv(self.experiments_dir/"dataset.csv", index = False)
-        if self.wandb_logger is not None:
+        if hasattr(self, "wandb_logger"):
             self.wandb_logger.log_table("dataset", dataframe = dataset_df)
     
     def on_validation_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.output_logger = ModelOutputLogger("val", self.config, trainer, pl_module)
 
-    def on_test_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.output_logger = ModelOutputLogger("test", self.config, trainer, pl_module)
-    
     def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
-        self.output_logger.log(outputs["preds"], batch)
-    
-    def on_test_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
-        self.output_logger.log(outputs["preds"], batch)
+        self.output_logger.log(outputs, batch)
     
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.output_logger.log_metrics()
         pl_module.log_dict(self.output_logger.get_metrics_dict())
 
-    def on_test_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.output_logger.log_metrics()
-        pl_module.log_dict(self.output_logger.get_metrics_dict())
-
     def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if self.wandb_logger is not None:
-            import wandb
-            wandb.log({f"val/confm_epoch={trainer.current_epoch}_step={trainer.global_step}" : wandb.plot.confusion_matrix(
-                probs = self.output_logger.get_probs().numpy(),
-                y_true = self.output_logger.get_labels().numpy(),
-                class_names = self.config.dataset.class_names)
-            })
+        epoch, step = trainer.current_epoch, trainer.global_step
+        self.logs_dir = get_new_dir(self.experiments_dir / "val_logs")
+        confm_fig = plot_confusion_matrix(self.output_logger.get_confusion_matrix(), self.logs_dir / f"epoch={epoch}_step={step-1}_confm.png")
+        _ = plot_metrics_table(self.output_logger.get_metrics_df(), self.logs_dir / f"epoch={epoch}_step={step-1}_metrics.png")
 
-    def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if self.wandb_logger is not None:
-            import wandb
-            wandb.log({f"test/confm_epoch={trainer.current_epoch}_step={trainer.global_step}" : wandb.plot.confusion_matrix(
-                probs = self.output_logger.get_probs().numpy(),
-                y_true = self.output_logger.get_labels().numpy(),
-                class_names = self.config.dataset.class_names)
-            })
+        if hasattr(self, "wandb_logger"):
+            self.wandb_logger.log_table(key = "val/metrics", dataframe = self.output_logger.get_metrics_df(), step = step-1)
+            self.wandb_logger.experiment.log({"val/confusion_matrix": confm_fig, "trainer/global_step": step-1})
+        plt.close("all")
+
+    # def on_test_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        # self.output_logger = ModelOutputLogger("test", self.config, trainer, pl_module)
+    # def on_test_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+        # self.output_logger.log(outputs, batch)
+    # def on_test_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        # self.output_logger.log_metrics()
+        # pl_module.log_dict(self.output_logger.get_metrics_dict())
+    # def on_test_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        # if self.wandb_logger is not None:
+            # import wandb
+            # wandb.log({f"test/confm_epoch={trainer.current_epoch}_step={trainer.global_step}" : wandb.plot.confusion_matrix(
+                # probs = self.output_logger.get_probs().numpy(),
+                # y_true = self.output_logger.get_labels().numpy(),
+                # class_names = self.config.dataset.class_names)
+            # })
 
 # class SegmentationMetricsLogger(Callback):
     # pass

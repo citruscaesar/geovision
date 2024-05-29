@@ -26,5 +26,9 @@ def get_alexnet(
             raise ValueError("invalid :weights")
     return model    
 
-# class AlexNet(torch.nn.Module):
-    # def __init__(self, num_classes:int = 1000, dropout:int = 0.5, weights: ):
+class AlexNet(torch.nn.Module):
+    def __init__(self, num_classes:int = 1000, dropout:int = 0.5):
+        self.classifier = torch.nn.Sequential([
+            torch.nn.Conv2d(in_channels=3, out_channels=96, kernel_size=11, stride=4),
+            torch.nn.LocalResponseNorm()
+        ])
