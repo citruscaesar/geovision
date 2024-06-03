@@ -34,7 +34,7 @@ dataloader_params:
   batch_size: 64 
   gradient_accumulation: 1
   # degree of multiprocessing
-  num_workers: 8 
+  num_workers: 2 
   persistent_workers: True
   pin_memory: False
 

@@ -36,14 +36,7 @@ class TransformsConfig(BaseModel):
 class Dataset(ABC):
     valid_splits = ("train", "val", "test", "trainval", "all")
 
-    def __repr__(self) -> str:
-        name, storage, task = self.name.split('_')
-        return '\n'.join([
-            f"{name} dataset for {task}",
-            f"local {storage} @ [{self.root}]",
-            f"with {len(self.class_names)} classes: {self.class_names}",
-            f"and {len(self)} images loaded under {self.split} split",
-        ])
+
 
     @abstractmethod
     def __init__(
@@ -113,6 +106,31 @@ class Dataset(ABC):
     @abstractmethod
     def std_devs(self) -> tuple[float, ...]:
         pass
+
+    def __repr__(self) -> str:
+        name, storage, task = self.name.split('_')
+        return '\n'.join([
+            f"{name} dataset for {task}",
+            f"local {storage} @ [{self.root}]",
+            f"with {len(self.class_names)} classes: {self.class_names}",
+            f"and {len(self)} images loaded under {self.split} split",
+        ])
+
+    @property
+    def num_total_samples(self) -> int: 
+        return len(self.df)
+
+    @property
+    def num_train_samples(self) -> int: 
+        return len(self.df[self.df["split"]=="train"])
+
+    @property
+    def num_val_samples(self) -> int: 
+        return len(self.df[self.df["split"]=="val"])
+
+    @property
+    def num_test_samples(self) -> int: 
+        return len(self.df[self.df["split"]=="test"])
 
 class Validator:
     @staticmethod
