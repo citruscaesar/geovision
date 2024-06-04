@@ -56,13 +56,13 @@ class ClassificationModule(LightningModule):
         self.train_metric.update(preds, labels)
         self.log("train/loss", loss, on_step = True, on_epoch = True)
         self.log(f"train/{self.config.metric}", self.train_metric, on_step = True, on_epoch = True)
-        return loss 
+        return {"loss": loss, "preds": preds} 
     
     def validation_step(self, batch, batch_idx):
         preds, labels, loss = self._forward(batch) 
         self.log("val/loss", loss, on_step = True, on_epoch = True)
         self.log(f"val/{self.config.metric}", self.val_metric(preds, labels), on_step = True, on_epoch = True)
-        return preds 
+        return {"loss": loss, "preds": preds} 
 
     # def test_step(self, batch, batch_idx):
         # preds, labels, loss = self._forward(batch) 

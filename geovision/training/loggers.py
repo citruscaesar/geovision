@@ -13,6 +13,7 @@ from lightning import Callback, LightningModule, Trainer
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from geovision.config.basemodels import ExperimentConfig
+from geovision.config.parsers import get_task
 from geovision.data.dataset import Dataset
 from geovision.logging import get_logger
 from geovision.io.local import get_new_dir, get_experiments_dir
@@ -38,7 +39,8 @@ class ExperimentWriter:
             self._run_idxs = sorted(int(key.removeprefix("run=")) for key in logfile.keys())
             if len(self._run_idxs) == 0:
                 self._run = -1
-            self._run = self._run_idxs[-1]
+            else:
+                self._run = self._run_idxs[-1]
     
     @property
     def run_idxs(self) -> list[int]:
@@ -54,7 +56,7 @@ class ExperimentWriter:
             num_test_steps_per_epoch: Optional[int] = None,
         ):
         self._run += 1
-        with self._logs as logfile:
+        with h5py.File(self._root, mode = 'a') as logfile:
             run = logfile.create_group(f"run={self._run}")
             run.create_dataset("epoch_begin", dtype = np.uint32, data = epoch_begin)
             run.create_dataset("step_begin", dtype = np.uint32, data = step_begin)
@@ -66,7 +68,7 @@ class ExperimentWriter:
         }
     
     def init_metrics(self, metrics: list[str]):
-        with self._logs as logfile:
+        with h5py.File(self._root, mode = 'a') as logfile:
             if (run := logfile.get(f"run={self._run}")) is None:
                 raise TypeError(f"run = {self._run} was not initialized")
             for metric in metrics:
@@ -78,16 +80,16 @@ class ExperimentWriter:
                     case "step":
                         if self.num_steps_per_epoch[split] is None: 
                             return TypeError(f"run = {self._run} was not initialized with num_{split}_steps_per_epoch") 
-                        run.create_dataset(metric, shape = (self.num_steps_per_epoch[split],), dtype = np.float32)
+                        run.create_dataset(metric, shape = self.num_steps_per_epoch[split], dtype = np.float32)
                     case "epoch":
-                        run.create_dataset(metric, shape = (1,), dtype = np.float32)
+                        run.create_dataset(metric, shape = 1, dtype = np.float32)
     
     def init_confusion_matrix(self, split: str, num_classes: int):
-        with self._logs as logfile:
+        with h5py.File(self._root, mode = 'a') as logfile:
             logfile.create_dataset(f"run={self._run}/{split}_confusion_matrix_epoch", shape = (1, num_classes, num_classes), dtype = np.uint32)
     
     def init_eval_logits(self, split: str, num_classes: Optional[int] = None, top_k: Optional[int] = None):
-        with self._logs as logfile:
+        with h5py.File(self._root, mode = 'a') as logfile:
             if num_classes is not None and top_k is None:
                 logfile.create_dataset(f"run={self._run}/{split}_logits_epoch", shape = (1, self.num_steps_per_epoch[split], num_classes), dtype = np.float32)
             elif num_classes is None and top_k is not None:
@@ -97,7 +99,7 @@ class ExperimentWriter:
                 raise ValueError(f"either :num_classes or :top_k must be provided, got num_classes = {num_classes} top_k = {top_k}")
     
     def init_new_epoch(self):
-        with self._logs as logfile:
+        with h5py.File(self._root, mode = 'a') as logfile:
             run = logfile.get(f"run={self._run}")
             for metric in [metric for metric in run.keys() if metric.split('_')[-1] == "step"]:
                 split, array = metric.split('_')[0], run.get(metric)
@@ -107,20 +109,19 @@ class ExperimentWriter:
                 array.resize((array.shape[0]+1, *array.shape[1:]))
 
     def log_metrics(self, idx: int, metrics: dict[str, Any]):
-       with self._logs as logfile:
+        with h5py.File(self._root, mode = 'a') as logfile:
             for name, value in metrics.items():
                 logfile[f"run={self._run}/{name}"][idx] = value
     
     def dump_metric_steps_csv(self):
         pass
-    
+
 class ClassificationMetricsLogger(Callback):
     def __init__(self, config: ExperimentConfig, log_every_n_steps: int):
         super().__init__()
         self._config = config
-        self._experiment = ExperimentWriter(root = get_experiments_dir(config))
         self._log_every_n_steps = log_every_n_steps
-        self._metric_params = self._config
+        self._experiment = ExperimentWriter(root = get_experiments_dir(config))
 
     def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
         match stage:
@@ -131,7 +132,7 @@ class ClassificationMetricsLogger(Callback):
             case "test":
                 self._dataset = trainer.datamodule.test_dataset
 
-        _batch_size = self.config.dataloader_params.batch_size // self.config.dataloader_params.gradient_accumulation
+        _batch_size = self._config.dataloader_params.batch_size // self._config.dataloader_params.gradient_accumulation
         self.num_train_steps_per_epoch = self._dataset.num_train_samples // _batch_size,
         self.num_val_steps_per_epoch = self._dataset.num_val_samples // _batch_size,
         self.num_test_steps_per_epoch = self._dataset.num_test_samples // _batch_size
@@ -144,6 +145,14 @@ class ClassificationMetricsLogger(Callback):
             num_val_steps_per_epoch=self.num_val_steps_per_epoch,
             num_test_steps_per_epoch=self.num_test_steps_per_epoch,
         ) 
+
+        self._metric_params = {  
+            "task": get_task(self._config.dataset),
+            "num_classes": self._config.dataset.num_classes,
+        }
+
+    def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: dict[str, Any]) -> None:
+        print("callback on_load_ckpt triggered")
     
     def on_train_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self._experiment.init_metrics([
@@ -152,17 +161,29 @@ class ClassificationMetricsLogger(Callback):
             f"train_{self._config.metric}_step",
             f"train_{self._config.metric}_epoch",
         ])
-        self.train_step = 0 
-        self.train_metric = self._config.get_metric(self._config.metric, pl_module.metric_params)
-        self.train_loss_step = np.empty((self.num_train_steps_per_epoch,), np.float32)
-        self.train_metric_step = np.empty((self.num_train_steps_per_epoch,), np.float32)
-    
+
+        self._step, self._log_step, self._log_epoch = 0, 0, 0
+        self.train_loss = np.empty(self.num_train_steps_per_epoch, np.float32)
+        self.train_metric = np.empty(self.num_train_steps_per_epoch, np.float32)
+        self.train_metric_fn = self._config.get_metric(self._config.metric, self._metric_params)
+
     def on_train_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: Mapping[str, Any], batch: Any, batch_idx: int) -> None:
-        self.train_loss_step[self.train_step] = outputs["loss"].item()
-        self.train_metric_step[self.train_step] = self.train_metric()
-    
+        self.train_loss[self._step] = outputs["loss"].item()
+        self.train_metric[self._step] = self.train_metric_fn(outputs["preds"].detach().cpu(), batch[1].detach().cpu()).item()
+
+        if (self._step+1) % self._log_every_n_steps == 0:
+            log_interval_begin, log_interval_end = self._step+1-self._log_every_n_steps, self._step+1
+            print(f"log/step: {self._log_step}, train/loss_step: {np.mean(self.train_loss[log_interval_begin:log_interval_end])}")
+            print(f"log/step: {self._log_step}, train/metric_step: {np.mean(self.train_metric[log_interval_begin:log_interval_end])}")
+            self._step = 0
+            self._log_step += 1
+        else: 
+            self._step += 1
+                
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        return super().on_train_epoch_end(trainer, pl_module)
+        print(f"log/epoch: {self._log_epoch}, train/loss_epoch: {np.mean(self.train_loss)}")
+        print(f"log/epoch: {self._log_epoch}, train/metric_epoch: {np.mean(self.train_metric)}")
+        self._log_epoch += 1
 
 # class ModelOutputLogger:
 # def __init__(self, split: Literal["val", "test"], config, trainer: Trainer, pl_module: LightningModule):
@@ -361,11 +382,11 @@ def get_lr_logger(config):
         log_weight_decay = True
     )
 
-def get_classification_logger(config):
+def get_classification_logger(config, log_every_n_steps: int = 50):
     experiments_dir = get_experiments_dir(config)
     info_logger = get_logger("metrics_logger")
     info_logger.info(f"logging classification metrics to {experiments_dir}")
-    return ClassificationMetricsLogger(config)
+    return ClassificationMetricsLogger(config, log_every_n_steps)
 
 # def get_segmentation_logger(config):
     # experiments_dir = get_experiments_dir(config)
