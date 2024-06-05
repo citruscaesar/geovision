@@ -8,7 +8,6 @@ from geovision.config.parsers import get_task
 class ClassificationModule(LightningModule):
     def __init__(self, config: ExperimentConfig, model: Optional[torch.nn.Module] = None) -> None:
         super().__init__()
-        
         self.config = config
         self.learning_rate = config.optimizer_params.lr 
         self.batch_size = config.dataloader_params.batch_size // config.dataloader_params.gradient_accumulation
