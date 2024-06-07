@@ -7,51 +7,75 @@ from geovision.config.basemodels import ExperimentConfig
 from geovision.io.local import get_experiments_dir
 
 def get_metrics_df(config: ExperimentConfig) -> pd.DataFrame:
-    return pd.read_csv(get_experiments_dir(config) / "metrics.csv")
+    def drop_incomplete_val_metrics(df: pd.DataFrame) -> pd.DataFrame:
+        val_epoch, val_start, drop_idxs = False, 0, list() 
+        for idx, row in df.iterrows():
+            if not val_epoch:
+                if pd.notna(row["val/loss_step"]): # val_epoch starts when a val/loss_step is observed 
+                    print(f"Cleaner: val started at {idx}")
+                    val_epoch, val_start = True, idx # signal that val_epoch has started
+                    if idx == len(df) -1: # edge case, if val_epoch begins at the last index
+                        drop_idxs.append(idx) # drop the single log
+                        val_epoch = False # unneccessary as this is the last entry in the df
+                elif pd.notna(row["val/loss_epoch"]): # a lone val_loss/epoch is observed, with no preceesing val_steps  
+                    drop_idxs.apend(idx) # drop the val_epoch log
+
+            else:
+                if pd.isna(row["val/loss_step"]): # if val_epoch ends
+                    print(f"Cleaner: val ended at {idx}")
+                    val_epoch = False # signal that val epoch has ended
+                    if idx-val_start < 4: # if val_epoch is incomplete
+                        drop_idxs.extend(list(range(val_start, idx))) # drop the val_step logs
+                        if pd.notna(row["val/loss_epoch"]): # if the incomplete val_epoch ends with epoch loss  
+                            drop_idxs.append(idx) # drop the val_epoch log too 
+                if idx == len(df) - 1: # if df ends while val_epoch is active 
+                    print(f"Cleaner: val ended at {idx}")
+                    val_epoch = False # unneccessary as this is the last entry in the df
+                    if idx-val_start < 4: # if val_epoch is incomplete
+                        drop_idxs.extend(list(range(val_start, idx))) # drop the val_step logs
+        drop_idxs = list(set(drop_idxs))
+        print(f"Dropping idxs: {drop_idxs}")
+        return df.drop(index = list(set(drop_idxs)))
+
+    return (
+        pd.read_csv(get_experiments_dir(config) / "metrics.csv")
+        .pipe(drop_incomplete_val_metrics)
+        .reset_index(drop = True)
+        .assign(epoch = lambda df: df["epoch"].ffill().astype("int"))
+    )
 
 def get_train_df(metrics_df: pd.DataFrame, metric: str):
     return (
         metrics_df
-        .assign(epoch = lambda df: df["epoch"].ffill())
         .loc[:, ["epoch", "step", "train/loss_step", "train/loss_epoch", f"train/{metric}_epoch"]] # f"train/{config.metric}_step"
         .dropna(subset = ["train/loss_step", "train/loss_epoch"], how = "all")
     )
 
 def get_val_df(metrics_df: pd.DataFrame, metric: str):
-    def _clean_val_metrics(df):
-        val_steps_per_epoch = list()
-        epoch_idxs = list()
-        drop_idxs = list()
+    def get_val_steps_per_epoch(df: pd.DataFrame) -> int:
+        count = 0
+        for _, row in df.iterrows():
+            if pd.notna(row["val/loss_step"]):
+                count+=1
+            else:
+                return count
 
-        df = df.assign(is_val_step = lambda df: df["val/loss_step"].notna())
-        start, end,prev = 0, 0, False
-        for idx, row in df.iterrows():
-            if row["is_val_step"] and not prev:
-                start, prev = idx, True
-            elif not row["is_val_step"] or idx == len(df):
-                end, prev = idx, False
-                epoch_idxs.append((start, end))
-                val_steps_per_epoch.append(end-start)
-
-        for idx, steps in enumerate(val_steps_per_epoch):
-            if steps < max(val_steps_per_epoch):
-                drop_idxs += range(epoch_idxs[idx][0], epoch_idxs[idx][1])
-
+    def assign_val_steps(df: pd.DataFrame) -> pd.DataFrame:
+        val_steps_per_epoch = get_val_steps_per_epoch(df)
         step = 0
         for idx, row in df.iterrows():
-            if row["is_val_step"]:
-                df.at[idx, "step"] = (row["epoch"] * max(val_steps_per_epoch)) + step
+            if pd.notna(row["val/loss_step"]):
+                df.at[idx, "step"] = row["epoch"] * val_steps_per_epoch + step 
                 step += 1
             else:
                 step = 0
-        return df.drop(index = drop_idxs, columns = "is_val_step")
+        return df
 
     return (
         metrics_df
-        .assign(epoch = lambda df: df["epoch"].ffill())
         .loc[:, ["epoch", "step", "val/loss_step", f"val/{metric}_step", "val/loss_epoch", f"val/{metric}_epoch"]]
         .dropna(subset = ["val/loss_step", "val/loss_epoch"], how = "all")
-        .pipe(_clean_val_metrics)
+        .pipe(assign_val_steps)
     )
 
 def get_ckpts_df(config: ExperimentConfig) -> pd.DataFrame:
@@ -107,7 +131,7 @@ def plot_experiment(config: ExperimentConfig, save: bool = True):
     ckpt_axis = train_ax.secondary_xaxis(location=0)
     ckpt_axis.set_xticks(cedf["step"])
 
-    train_ax.legend(fontsize = 8, bbox_to_anchor=(1, 1.01))
+    train_ax.legend(fontsize = 8)#, bbox_to_anchor=(1, 1.01))
     fig.suptitle(f"{config.dataset.name} :: {config.name}" , fontsize = 10)
     plt.show()
     if save:
