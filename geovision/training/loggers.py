@@ -24,7 +24,7 @@ class ExperimentWriter:
     def __init__(self, experiments_dir: Path):
         self.logfile = experiments_dir / "experiment.h5"
     
-    def init_run(self, run: int | Literal["new", "last"], epoch, step, log_every_n_steps):
+    def init_run(self, run: int | Literal["new", "last"], log_every_n_steps: int):
         with h5py.File(self.logfile, mode = 'a') as logfile:
             self.run_idxs = sorted(int(key.removeprefix("run_")) for key in logfile.keys())
             self.prev_run_idx = -1 if len(self.run_idxs) == 0 else self.run_idxs[-1]
@@ -43,9 +43,15 @@ class ExperimentWriter:
 
         with h5py.File(self.logfile, mode = 'r+') as logfile:
             run_logs = logfile.create_group(f"run_{self.run_idx}")
-            run_logs.create_dataset("epoch_begin", shape = 1, dtype = np.uint32, data = epoch)
-            run_logs.create_dataset("step_begin", shape = 1, dtype = np.uint32, data = step)
+            run_logs.create_dataset("epoch_begin", shape = 1, dtype = np.uint32)
+            run_logs.create_dataset("step_begin", shape = 1, dtype = np.uint32)
             run_logs.create_dataset("log_every_n_steps", shape = 1, dtype = np.uint32, data = log_every_n_steps)
+    
+    def update_run_step(self, epoch, step):
+        with h5py.File(self.logfile, mode = 'r+') as logfile:
+            run_logs = logfile[f"run_{self.run_idx}"]
+            run_logs["epoch_begin"][:] = epoch
+            run_logs["step_begin"][:] = step 
     
     def init_metric_arrays(self, split: str, metrics: list[str], log_steps_per_epoch: int):
         # print(f"ExperimentWriter: initializing {split} metric array with length = {log_steps_per_epoch}")
@@ -182,10 +188,13 @@ class ClassificationMetricsLogger(Callback):
         }
     
     def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
-        self.experiment.init_run("new", trainer.current_epoch, trainer.global_step, self.log_every_n_steps)
-
+        self.experiment.init_run("new", self.log_every_n_steps)
+    
     def teardown(self, trainer: Trainer, pl_module: LightningModule, stage: str):
         self.experiment.trim_run()
+    
+    def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: dict[str, Any]):
+        self.experiment.update_run_step(checkpoint.get("epoch", 0), checkpoint.get("global_step", 0))
     
     def on_train_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.train_epoch = 0
