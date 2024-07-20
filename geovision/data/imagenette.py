@@ -14,15 +14,17 @@ from pathlib import Path
 
 from tqdm import tqdm 
 from io import BytesIO
-from .dataset import Dataset, DatasetConfig, TransformsConfig, Validator
+from .dataset import Dataset
+from .config import DatasetConfig
+from .utils import get_valid_split, get_df, get_split_df
 from geovision.io.local import get_valid_file_err, get_valid_dir_err, get_new_dir, is_valid_file
-from geovision.io.local import get_dataset_dir
 from geovision.io.remote import HTTPIO 
-from geovision.logging import get_logger
-logger = get_logger("imagenette")
+
+import logging
+logger = logging.getLogger(__name__)
 
 class Imagenette:
-    name = "imagenette"
+    local = Path.home() / "datasets" / "imagenette"
     url = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz"
     class_names = (
         'tench', 'english_springer', 'cassette_player', 'chain_saw', 'church', 
@@ -35,123 +37,77 @@ class Imagenette:
         random_seed = 42,
         test_sample = 0.2,
         val_sample = 0.1,
-        tabular_sampling = "stratified"
+        tabular_sampling = "imagefolder_notest",
+        image_pre = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale = True), T.Resize(224, antialias=True)]),
+        target_pre = T.Identity(),
+        train_aug = T.RandomHorizontalFlip(0.5),
+        eval_aug = T.Identity() 
     )
-    default_transforms  = TransformsConfig(
-        image_transform = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale = True), T.Resize((224, 224), antialias=True)]),
-        common_transform = T.Identity() 
-    ) 
-
-    @classmethod
-    def download(cls, root: str | Path):
-        r"""download and save imagenette2.tgz to :root/archives/"""
-        HTTPIO.download_url(cls.url, get_dataset_dir(root, "archives", invalid_ok=True))
     
     @classmethod
-    def transform_to_imagefolder(cls, root: str | Path) -> None:
-        """extracts files from imagenette2.tgz to :root/imagefolder
-        Parameters
-        -
-        :root -> points to imagenette root, usually ~/datasets/imagenette
-        """
-        archive = get_valid_file_err(get_dataset_dir(root, "archives"), "imagenette2.tgz", valid_extns=(".tgz",))
-        imagefolder = get_dataset_dir(root, "images") 
-        tempfolder = get_dataset_dir(root, "temp") 
-        with tarfile.open(archive) as tf:
-            tf.extractall(tempfolder)
-        for temp_path in tqdm(tempfolder.rglob("*.JPEG"), total = 13394):
-            image_path = imagefolder / temp_path.parent.name / f"{temp_path.stem}.jpg"
-            image_path.parent.mkdir(exist_ok=True)
-            shutil.move(temp_path, image_path)
-        shutil.rmtree(tempfolder)
+    def download(cls):
+        r"""download and save imagenette2.tgz to :imagenette/archives/"""
+        HTTPIO.download_url(cls.url, cls.local/"archives")
+    
+    @classmethod
+    def transform_to_imagefolder(cls) -> None:
+        """extracts files from archive to :imagenette/imagefolder, raises OSError if :imagenette/archives/imagenette2.tgz not found"""
+
+        def move_tempfiles_to_imagefolder(split: Literal["train", "val"]):
+            for src_path in tqdm(list((temp_path/"imagenette2"/split).rglob("*.JPEG")), desc = f"{imagefolder_path/split}"):
+                dst_path = imagefolder_path/split/src_path.parent.stem/f"{src_path.stem}.jpg"
+                dst_path.parent.mkdir(exist_ok=True, parents=True)
+                shutil.move(src_path, dst_path)
+
+        imagefolder_path = get_new_dir(cls.local/"imagefolder") 
+        temp_path = get_new_dir(cls.local/"temp") 
+        with tarfile.open(get_valid_file_err(cls.local/"archives"/"imagenette2.tgz")) as tf:
+            tf.extractall(temp_path)
+        move_tempfiles_to_imagefolder("train")
+        move_tempfiles_to_imagefolder("val")
+        shutil.rmtree(temp_path)
         
     @classmethod 
-    def transform_to_hdf(cls, root: Path) -> None:
-        """encodes files from imagefolder to :root/hdf5/imagenette.h5
-        Parameters
-        -
-        :root -> points to imagenette root, usually ~/datasets/imagenette
-        """
-        imagefolder_path = get_dataset_dir(root, "imagefolder", invalid_ok=False) 
-        hdf5_path = get_dataset_dir(root, "hdf5", invalid_ok=True) / "imagenette.h5"
+    def transform_to_hdf(cls) -> None:
+        """encodes files from imagefolder to :root/hdf5/imagenette.h5, raises OSError if imagenette/imagefolder/images is invalid"""
+        imagefolder_path = get_valid_dir_err(cls.local/"imagefolder", empty_ok=False) 
+        h5_path = get_new_dir(cls.local/"hdf5") / "imagenette.h5"
 
-        df = cls.get_dataset_df_from_imagefolder(root)  
-        df.to_hdf(hdf5_path, mode = "w", key = "df")
-        with h5py.File(hdf5_path, mode = "r+") as hdf5_file:
-            images = hdf5_file.create_dataset(
-                name = "images", 
-                shape = (13394,),
-                dtype=h5py.special_dtype(vlen = np.dtype('uint8'))
-            )
-            for idx, row in tqdm(df.iterrows(), total = len(df)):
+        df = cls.get_dataset_df_from_imagefolder()  
+        df.to_hdf(h5_path, mode = "w", key = "df")
+        with h5py.File(h5_path, mode = "r+") as h5file:
+            images = h5file.create_dataset(name = "images", shape = (len(df),), dtype = h5py.special_dtype(vlen = np.dtype('uint8')))
+            for idx, row in tqdm(df.iterrows(), total = 13394):
                 with open(imagefolder_path/row["image_path"], "rb") as image_file:
-                    image_bytes = image_file.read()
-                    images[idx] = np.frombuffer(image_bytes, dtype = np.uint8)
+                    images[idx] = np.frombuffer(image_file.read(), dtype = np.uint8)
 
     @classmethod
-    def get_dataset_df_from_archive(cls, root: str | Path) -> pd.DataFrame:
-        r"""returns imagenette dataset_df generated through :archive 
-
-        Parameters
-        -
-        :root -> path to dataset root, usually ~/datasets/imagenette
-
-        Raises
-        -
-        OSError -> :archive invalid path if not found at :root/archives/imagenette2.tgz
-        """
-        archive = get_valid_file_err(get_dataset_dir(root, "archives"), "imagenette2.tgz", valid_extns=(".tgz",))
+    def get_dataset_df_from_archive(cls) -> pd.DataFrame:
+        """generates and returns dataset_df from :imagenette/archive/imagenette2.tgz, raises OSError if archive is not found""" 
+        archive = get_valid_file_err(cls.local/"archives"/"imagenette2.tgz")
         with tarfile.open(archive) as a:
-            return (
-                pd.DataFrame({"image_path": [Path(p) for p in a.getnames() if p.endswith(".JPEG")]})
-                .pipe(cls._get_dataset_df)
-            )
+            return pd.DataFrame({"image_path": [Path(p) for p in a.getnames() if p.endswith(".JPEG")]}).pipe(cls._get_dataset_df)
 
     @classmethod
-    def get_dataset_df_from_imagefolder(cls, root: str | Path) -> pd.DataFrame:
-        """generates and returns imagenette dataset_df by looking through the imagefolder
-
-        Parameters
-        -
-        :root -> points to root, usually at ~/datastets/imagenette 
-
-        Raises
-        -
-        OSError -> :imagefolder invalid path if not found at :root/imagefolder/images
-        """
-        imagefolder = get_dataset_dir(root, "imagefolder") 
-        return pd.DataFrame({"image_path": list(imagefolder.rglob("*.jpg"))}).pipe(cls._get_dataset_df)
+    def get_dataset_df_from_imagefolder(cls) -> pd.DataFrame:
+        """generates and returns dataset_df from :imagenette/imagefolder, raises OSError if imagefolder dir is invalid""" 
+        return pd.DataFrame({"image_path": list(get_valid_dir_err(cls.local/"imagefolder", empty_ok=False).rglob("*.jpg"))}).pipe(cls._get_dataset_df)
     
     @classmethod
-    def get_dataset_df_from_hdf5(cls, root: str | Path) -> pd.DataFrame:
-        """returns imagenette dataset_df stored in :root/hdf5/imagenette.h5["df"]
-
-        Parameters
-        -
-        :hdf5_path -> points to root, usually ~/datasets/imagenette/ 
-
-        Raises
-        -
-        OSError -> :hdf5_path invalid path
-        """
-        hdf5_path = get_valid_file_err(get_dataset_dir(root, "hdf5"), "imagenette.h5", valid_extns=(".h5", ".hdf5"))
-        return pd.read_hdf(hdf5_path, key = "df", mode = 'r') # type: ignore
+    def get_dataset_df_from_hdf5(cls) -> pd.DataFrame:
+        """returns imagenette dataset_df stored in :imagenette/hdf5/imagenette.h5/df, raises OSError if h5 file is not found, and KeyError if df is not found in h5"""
+        return pd.read_hdf(get_valid_file_err(cls.local/"hdf5"/"imagenette.h5"), key = "df", mode = 'r') # type: ignore
 
     @classmethod 
     def _get_dataset_df(cls, df: pd.DataFrame) -> pd.DataFrame:
         class_synsets = sorted(df["image_path"].apply(lambda x: x.parent.stem).unique())
         return (
             df
-            .assign(image_path = lambda df: df["image_path"].apply(
-                lambda x: Path(x.parents[1].stem, x.parents[0].stem, x.name)))
-            .assign(label_str = lambda df: df["image_path"].apply(
-                lambda x: x.parent.stem))
+            .assign(image_path = lambda df: df["image_path"].apply(lambda x: Path(x.parents[1].stem, x.parents[0].stem, x.name)))
+            .assign(label_str = lambda df: df["image_path"].apply(lambda x: x.parent.stem))
             .sort_values("label_str")
-            .assign(label_idx = lambda df: df["label_str"].apply(
-                lambda x: class_synsets.index(x)))
-            .assign(label_str = lambda df: df["label_idx"].apply(
-                lambda x: cls.class_names[x]))
-            .assign(label_str = lambda df: df["label_str"])
+            .assign(label_idx = lambda df: df["label_str"].apply(lambda x: class_synsets.index(x)))
+            .assign(label_str = lambda df: df["label_idx"].apply(lambda x: cls.class_names[x]))
             .reset_index(drop = True)
         )
     
@@ -161,7 +117,6 @@ class ImagenetteImagefolderClassification(Dataset):
     num_classes = Imagenette.num_classes 
     means = Imagenette.means
     std_devs = Imagenette.std_devs
-
     df_schema = pa.DataFrameSchema({
         "image_path": pa.Column(str, coerce = True),  
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
@@ -170,39 +125,18 @@ class ImagenetteImagefolderClassification(Dataset):
     }, index = pa.Index(int, unique=True))
 
     split_df_schema = pa.DataFrameSchema({
-        "image_path": pa.Column(str, coerce = True, checks = [
-            pa.Check(lambda x: is_valid_file(x, valid_extns=(".jpg",)), element_wise=True)
-        ]),
+        "image_path": pa.Column(str, coerce = True, checks = [pa.Check(lambda x: is_valid_file(x), element_wise=True)]),
         "df_idx": pa.Column(int, unique = True),
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
     }, index = pa.Index(int, unique=True))
 
-    def __init__(
-            self, 
-            root: Path,
-            split: Literal["train", "val", "trainval", "test", "all"] = "all",
-            df: Optional[pd.DataFrame | Path] = None,
-            config: Optional[DatasetConfig] = None,
-            transforms: Optional[TransformsConfig] = None,
-            **kwargs
-        ) -> None:
-        logger.info(f"initializing {self.name}")
-        self._root = Validator._get_root_dir(get_dataset_dir(root, "imagefolder"))
-        self._split = Validator._get_split(split)
-        self._transforms = Validator._get_transforms(transforms, Imagenette.default_transforms)
-        self._df = Validator._get_df(
-            df = df,
-            config = config,
-            schema = self.df_schema,
-            default_df = Imagenette.get_dataset_df_from_imagefolder(root),
-            default_config = Imagenette.default_config,
-        )
-        self._split_df = Validator._get_imagefolder_split_df(
-            df = self._df,
-            schema = self.split_df_schema,
-            root = self._root,
-            split = self._split
-        )
+    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
+        self._root = get_valid_dir_err(Imagenette.local/"imagefolder") 
+        self._split = get_valid_split(split) 
+        self._config = config or Imagenette.default_config
+        logger.info(f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
+        self._df = get_df(self._config, self.df_schema, Imagenette.get_dataset_df_from_imagefolder())
+        self._split_df = get_split_df(self._df, self.split_df_schema, self._split, self._root)
 
     def __len__(self) :
         return len(self._split_df)
@@ -211,10 +145,13 @@ class ImagenetteImagefolderClassification(Dataset):
         idx_row = self._split_df.iloc[idx]
         image = iio.imread(idx_row["image_path"], format_hint=".jpg").squeeze()
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        image = self._transforms.image_transform(image) # type: ignore
-        if self._split == "train":
-            image = self._transforms.common_transform(image) # type: ignore
-        return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore 
+        if self._config.image_pre is not None:
+            image = self._config.image_pre(image)
+        if self._split == "train" and self._config.train_aug is not None:
+            image = self._config.train_aug(image) 
+        elif self._split in ("val", "test"):
+            image = self._config.eval_aug(image)
+        return image, idx_row["label_idx"], idx_row["df_idx"] 
 
     @property
     def root(self):
@@ -231,10 +168,6 @@ class ImagenetteImagefolderClassification(Dataset):
     @property
     def split_df(self) -> pd.DataFrame:
         return self._split_df
-
-    @property
-    def transforms(self) -> TransformsConfig:
-        return self._transforms
 
 class ImagenetteHDF5Classification(Dataset):
     name = "imagenette_hdf5_classification" 
@@ -254,32 +187,14 @@ class ImagenetteHDF5Classification(Dataset):
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
     }, index = pa.Index(int, unique=True))
 
-    def __init__(
-            self, 
-            root: Path,
-            df: Optional[pd.DataFrame] = None,
-            split: Literal["train", "val", "trainval", "test", "all"] = "all",
-            config: Optional[DatasetConfig] = None,
-            transforms: Optional[TransformsConfig] = None,
-            **kwargs
-        ) -> None:
-        logger.info(f"initializing {self.name}")
-        self._root = Validator._get_root_hdf5(get_dataset_dir(root, "hdf5")/"imagenette.h5")
-        self._split = Validator._get_split(split)
-        self._transforms = Validator._get_transforms(transforms, Imagenette.default_transforms)
-        self._df = Validator._get_df(
-            df = df,
-            config = config,
-            schema = self.df_schema,
-            default_df = Imagenette.get_dataset_df_from_hdf5(root),
-            default_config = Imagenette.default_config,
-        )
-        self._split_df = Validator._get_hdf5_split_df(
-            df = self._df,
-            schema = self.split_df_schema,
-            split = self._split
-        )
-        
+    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
+        self._root = get_valid_file_err(Imagenette.local/"hdf5"/"imagenette.h5") 
+        self._split = get_valid_split(split) 
+        self._config = config or Imagenette.default_config
+        logger.info(f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
+        self._df = get_df(self._config, self.df_schema, Imagenette.get_dataset_df_from_hdf5())
+        self._split_df = get_split_df(self._df, self.split_df_schema, self._split)
+
     def __len__(self) -> int:
         return len(self._split_df)
 
@@ -288,27 +203,13 @@ class ImagenetteHDF5Classification(Dataset):
         with h5py.File(self._root, mode = "r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        image = self._transforms.image_transform(image) # type: ignore
-        if self._split == "train":
-            image = self._transforms.common_transform(image)
-        return image, idx_row["label_idx"], idx_row["df_idx"] # type: ignore
-
-    def _assign_train_test_val_splits(self, df: pd.DataFrame, val_split: float, test_split: float, random_seed: int) -> pd.DataFrame:
-        test = (df.groupby("label_str", group_keys=False)
-                  .apply(lambda x: x.sample(frac = test_split, random_state = random_seed, axis = 0)
-                  .assign(split = "test")))
-
-        val = (df.drop(test.index, axis = 0)
-                 .groupby("label_str", group_keys=False)
-                 .apply(lambda x: x.sample(frac = val_split / (1-test_split), random_state = random_seed, axis = 0)
-                 .assign(split = "val")))
-
-        train = (df.drop(test.index, axis = 0)
-                   .drop(val.index, axis = 0)
-                   .assign(split = "train"))
-
-        return pd.concat([train, val, test])
-
+        if self._config.image_pre is not None:
+            image = self._config.image_pre(image)
+        if self._split == "train" and self._config.train_aug is not None:
+            image = self._config.train_aug(image) 
+        elif self._split in ("val", "test"):
+            image = self._config.eval_aug(image)
+        return image, idx_row["label_idx"], idx_row["df_idx"]
 
     @property
     def root(self):
@@ -326,6 +227,7 @@ class ImagenetteHDF5Classification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-    @property
-    def transforms(self) -> TransformsConfig:
-        return self._transforms
+if __name__ == "__main__":
+    Imagenette.download()
+    Imagenette.transform_to_imagefolder()
+    Imagenette.transform_to_hdf()

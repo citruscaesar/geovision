@@ -1,58 +1,39 @@
 from typing import Any
-import torch
-from .dataset import Dataset
+
 from torch.utils.data import DataLoader
 from lightning import LightningDataModule
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
-from geovision.config.basemodels import ExperimentConfig
+
+from .dataset import Dataset
+from geovision.config.config import ExperimentConfig
 
 class ImageDatasetDataModule(LightningDataModule):
     def __init__(self, config: ExperimentConfig) -> None:
         super().__init__()
         self.config = config
+        self.dataloader_kwargs = {
+            "batch_size": config.dataloader_params.batch_size // config.dataloader_params.gradient_accumulation,
+            "num_workers": config.dataloader_params.num_workers,
+            "persistent_workers": config.dataloader_params.persistent_workers,
+            "pin_memory": config.dataloader_params.pin_memory
+        } 
     
     def setup(self, stage):
         _valid_stages = ("fit", "validate", "test", "predict")
         if stage not in _valid_stages:
             raise ValueError(f":stage must be one of {_valid_stages}, got {stage}")
         if stage in ("fit", "validate"):
-            self.val_dataset = self.config.dataset(split = "val", **self._get_dataset_kwargs()) 
+            self.val_dataset: Dataset = self.config.get_dataset("val") 
             if stage == "fit":
-                self.train_dataset = self.config.dataset(split = "train", **self._get_dataset_kwargs())
+                self.train_dataset: Dataset = self.config.get_dataset("train") 
         if stage == "test":
-            self.test_dataset = self.config.dataset(split = "test", **self._get_dataset_kwargs())
+            self.test_dataset: Dataset = self.config.get_dataset("test") 
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return DataLoader(
-            dataset = self.train_dataset,  
-            shuffle = True,
-            **self._get_dataloader_kwargs()
-        )
+        return DataLoader(self.train_dataset, shuffle = True, **self.dataloader_kwargs)
     
     def val_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(
-            dataset = self.val_dataset,
-            shuffle = False,
-            **self._get_dataloader_kwargs()
-        )
+        return DataLoader(self.val_dataset, shuffle = False, **self.dataloader_kwargs)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(
-            dataset = self.test_dataset,
-            shuffle = False,
-            **self._get_dataloader_kwargs()
-        )
-
-    def _get_dataset_kwargs(self) -> dict[str, Any]:
-        return {
-            "root": self.config.dataset_root,
-            "df": self.config.dataset_df,
-            "config": self.config.dataset_params,
-            "transforms": self.config.transforms
-        }
-
-    def _get_dataloader_kwargs(self) -> dict:
-        kwargs = self.config.dataloader_params.model_dump().copy()
-        kwargs["batch_size"] = kwargs["batch_size"] // kwargs["gradient_accumulation"]
-        del kwargs["gradient_accumulation"]
-        return kwargs 
+        return DataLoader(self.test_dataset, shuffle = False, **self.dataloader_kwargs)

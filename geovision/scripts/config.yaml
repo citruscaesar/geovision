@@ -1,44 +1,29 @@
-# name of the experiment folder
-name: logging_test
-# name of the dataset to load from geovision.data
-dataset: imagenette_hdf5_classification
-# path to the dataset directory, must exist
-dataset_root: ~/datasets/imagenette
-# optional path to the dataset.csv file, must exist
-dataset_df: null
-# alternative to dataset_df, specify params used to split and tile the dataset
+name: logging_test 
+random_seed: 42
+dataset: imagenette_imagefolder_classification
 dataset_params:
-  # random seed used to initialize random states everywhere, used for reproducibility, 
-  # should possibly be defined outside of dataframe_params
-  random_seed: 42
-  # optional params assign train-val-test split
-  # proportion of samples to be assigned as test split
+  df: null 
   test_sample: 0.2 
-  # proportion of samples to be assigned as val split
-  val_sample: 0.1
-  # sampling strategy used to assign splits (e.g. stratified, random, etc.)
-  tabular_sampling: stratified
-  # optional params to tile scenes 
+  val_sample: 0.05
+  tabular_sampling: imagefolder_notest 
   # spatially tile along the x axis: tile_x = (size_x, stride_x)
   tile_x: []
   # spatially tile along the y axis: tile_y = (size_y, stride_y)
   tile_y: []
-  # sampling strategy used to assign spatial tiles (e.g. image, geographic, etc.) 
-  tiling_strategy: null 
-  # optional band_order to spectrally sample the dataset 
+  spatial_sampling: null 
   bands: [] 
 
-# specify params to configure the dataloaders 
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
   batch_size: 64 
   gradient_accumulation: 1
-  # degree of multiprocessing
   num_workers: 2 
   persistent_workers: True
   pin_memory: False
 
-# specify params to configure the models, loss and optimizers
+metric: accuracy 
+metric_params: null
+
 nn: alexnet 
 nn_params:
   num_layers: null 
@@ -50,20 +35,49 @@ criterion_params:
 
 optimizer: sgd 
 optimizer_params:
-   #lr: 5.0e-6
-   lr: 6.0e-5
+   lr: 5.0e-6
    momentum: 0.9
    weight_decay: 5.0e-4
 
-# params to configure the primary metric monitored during train/eval 
-metric: f1 
+scheduler: null
+scheduler_params:
+  gamma: 0.1
 
-# specify params to configure transformations and augmentatations
-# _transform: squence of strings parsed to torchvision.transforms
-# transform:
-  # image_transform:
-    # [compose, to_image, to_dtype_float32_scaled]
-  # target_transform:
-    # [compose, to_image, to_dtype_float32_unscaled]
-  # common_transform:
-    # [compose, resize_224_224, random_horizontal_flip_5]
+transforms_script: |
+  from torch import float32
+  from torchvision.transforms import v2 as T
+  image_pre = T.Compose([
+    T.ToImage(),
+    T.ToDtype(float32, scale = True),
+    T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+  ])
+  target_pre = T.Compose([
+    T.ToImage(),
+    T.ToDtype(float32, scale = False),
+  ])
+  train_aug = T.Compose([
+    T.Resize(224),
+    T.RandomHorizontalFlip(0.5),
+    T.RandomCrop((224, 224))
+  ])
+  eval_aug = T.CenterCrop(224)
+
+log_params:
+  log_every_n_steps: 10 
+  log_every_n_epochs: 2
+  log_model_outputs: 0
+  log_models: -1 
+  log_to_h5: True
+  log_to_wandb: True
+  wandb_params:
+    tags: ["alexnet", "imagenette"]
+    notes: "testing wandb logging" 
+
+trainer_task: fit 
+trainer_params:
+  max_epochs: 10 
+  check_val_every_n_epoch: 2
+  num_sanity_val_steps: 0
+  log_every_n_steps: 10 
+  enable_checkpointing: True
+  enable_model_summary: True 

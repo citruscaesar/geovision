@@ -66,17 +66,10 @@ def test_datamodule(dm: LightningDataModule, limit_batches: int = 0, plot_batche
         display(df.filter(items = sorted(overlapped_idxs), axis = 0)) # type: ignore # noqa
 
 def test_dataset(config: Any, split: str = "all"):
-    ds: Dataset = config.dataset(
-        root = config.dataset_root,
-        split = split,
-        df = config.dataset_df,
-        config = config.dataset_params,
-        transforms = config.transforms
-    )
-    expected_image_shape = ds[0][0].shape
-    expected_label_shape = ds[0][1].shape
-    expected_image_dtype = ds[0][0].dtype
-    expected_label_dtype = ds[0][1].dtype
+    ds: Dataset = config.get_dataset(split)
+
+    expected_image_shape, expected_label_shape = ds[0][0].shape, ds[0][1].shape
+    expected_image_dtype, expected_label_dtype = ds[0][0].dtype, ds[0][1].dtype
 
     print(f"{ds.name} @ [{ds.root}]") # type: ignore
     print(f"image shape: {expected_image_shape}, dtype: {expected_image_dtype}")

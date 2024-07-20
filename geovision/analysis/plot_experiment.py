@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from geovision.config.basemodels import ExperimentConfig
+from geovision.config.config import ExperimentConfig
 from geovision.io.local import get_experiments_dir
 
 def get_metrics_df(config: ExperimentConfig) -> pd.DataFrame:
