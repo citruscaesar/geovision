@@ -1,10 +1,50 @@
-from pathlib import Path
+from numpy.typing import NDArray
+
+import h5py
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+from pathlib import Path
+from matplotlib.cm import Blues
+from matplotlib.axes import Axes
+from matplotlib.table import Table
+from matplotlib.gridspec import GridSpec 
+from matplotlib.widgets import RadioButtons
 from matplotlib.animation import FuncAnimation
-from geovision.config.config import ExperimentConfig
+
+from geovision.config import ExperimentConfig
 from geovision.io.local import get_experiments_dir
+from geovision.analysis.viz import plot_confusion_matrix
+
+def plot_run_metrics(config: ExperimentConfig):
+    fig = plt.figure(figsize = (15, 5), layout = "constrained")
+    gs = GridSpec(nrows = 1, ncols = 5, figure = fig)
+    ax = fig.add_subplot(gs[:, :4])
+    rax = fig.add_subplot(gs[:, 4:])
+
+    with h5py.File(get_experiments_dir(config)/"experiment.h5") as logfile:
+        matrices, labels = list(), list()
+        for run in sorted(logfile.keys()):
+            logs = logfile[run]
+            start, step = logs["epoch_begin"][0], logs["log_every_n_epochs"][0]
+            if (val_matrices := logs.get("val_confusion_matrix_epoch")) is None:
+                continue
+            for idx, matrix in enumerate(val_matrices):
+                matrices.append(matrix)
+                labels.append(f"{run}/epoch={start + step*idx}")
+
+    def draw_matrix(label: str): 
+        plot_confusion_matrix(ax, matrices[labels.index(label)])
+        ax.set_title(label, fontsize = 10)
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+    buttons = RadioButtons(rax, labels, active = 0)
+    buttons.on_clicked(draw_matrix)
+    buttons.set_active(0)
+
+#plot_run_metrics(ExperimentConfig.from_config("config.yaml"))
 
 def get_metrics_df(config: ExperimentConfig) -> pd.DataFrame:
     def drop_incomplete_val_metrics(df: pd.DataFrame) -> pd.DataFrame:

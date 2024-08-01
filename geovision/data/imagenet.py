@@ -13,7 +13,7 @@ import torchvision.transforms.v2 as T  # type: ignore
 from pathlib import Path
 
 from tqdm import tqdm
-from io import BytesIO
+from io import BytesIO #
 from .dataset import Dataset
 from .config import DatasetConfig
 from .utils import get_valid_split, get_df, get_split_df
@@ -159,7 +159,7 @@ class Imagenet:
 
     @classmethod
     def download(cls):
-        r"""download and save imagenette2.tgz to :imagenette/archives/imagenet-object-localization-challenge.zip"""
+        r"""download and save imagenet1k archive to :imagenette/archives/imagenet-object-localization-challenge.zip"""
         raise NotImplementedError
 
     @classmethod
@@ -276,43 +276,30 @@ class Imagenet:
     def remove_erroneous_images(cls, df: pd.DataFrame) -> pd.DataFrame:
         return df.drop(index=cls.erroneous_images).reset_index(drop=True)
 
-
 class ImagenetImagefolderClassification(Dataset):
     name = "imagenet_imagefolder_classification"
     class_names = Imagenet.class_names
     num_classes = Imagenet.num_classes
     means = Imagenet.means
     std_devs = Imagenet.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
+    df_schema = pa.DataFrameSchema({
             "image_path": pa.Column(str, coerce=True),
             "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenet.num_classes)))),
             "label_str": pa.Column(str, pa.Check.isin(Imagenet.class_names)),
             "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits)),
-        },
-        index=pa.Index(int, unique=True),
-    )
+        }, index=pa.Index(int, unique=True))
 
-    split_df_schema = pa.DataFrameSchema(
-        {
+    split_df_schema = pa.DataFrameSchema({
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int, unique=True),
             "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenet.num_classes)))),
-        },
-        index=pa.Index(int, unique=True),
-    )
+        }, index=pa.Index(int, unique=True))
 
-    def __init__(
-        self,
-        split: Literal["train", "val", "trainval", "test", "all"] = "all",
-        config: Optional[DatasetConfig] = None,
-    ):
+    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None):
         self._root = get_valid_dir_err(Imagenet.local / "imagefolder")
         self._split = get_valid_split(split)
         self._config = config or Imagenet.default_config
-        logger.info(
-            f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
+        logger.info(f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
         self._df = get_df(self._config, self.df_schema, Imagenet.get_dataset_df_from_imagefolder())
         self._df = Imagenet.remove_erroneous_images(self._df)
         self._split_df = get_split_df(self._df, self.split_df_schema, self._split, self._root)
@@ -347,42 +334,30 @@ class ImagenetImagefolderClassification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-
 class ImagenetHDF5Classification(Dataset):
     name = "imagenet_hdf5_classification"
     class_names = Imagenet.class_names
     num_classes = Imagenet.num_classes
     means = Imagenet.means
     std_devs = Imagenet.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
+    df_schema = pa.DataFrameSchema({
             "image_path": pa.Column(str, coerce=True),
             "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenet.num_classes)))),
             "label_str": pa.Column(str),
             "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits)),
-        },
-        index=pa.Index(int, unique=True),
-    )
-    split_df_schema = pa.DataFrameSchema(
-        {
+        }, index=pa.Index(int, unique=True))
+
+    split_df_schema = pa.DataFrameSchema({
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int),
             "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenet.num_classes)))),
-        },
-        index=pa.Index(int, unique=True),
-    )
+        }, index=pa.Index(int, unique=True))
 
-    def __init__(
-        self,
-        split: Literal["train", "val", "trainval", "test", "all"] = "all",
-        config: Optional[DatasetConfig] = None,
-    ):
+    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None):
         self._root = get_valid_dir_err(Imagenet.local / "hdf5" / "imagenet.h5")
         self._split = get_valid_split(split)
         self._config = config or Imagenet.default_config
-        logger.info(
-            f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
+        logger.info(f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
         self._df = get_df(self._config, self.df_schema, Imagenet.get_dataset_df_from_hdf5())
         self._df = Imagenet.remove_erroneous_images(self._df)
         self._split_df = get_split_df(self._df, self.split_df_schema, self._split, self._root)
@@ -417,3 +392,7 @@ class ImagenetHDF5Classification(Dataset):
     @property
     def split_df(self) -> pd.DataFrame:
         return self._split_df
+
+if __name__ == "__main__":
+    Imagenet.download()
+    Imagenet.transform_to_hdf()

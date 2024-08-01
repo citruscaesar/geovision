@@ -49,6 +49,8 @@ memory-profiler = "^0.61.0"
 names-generator = "^0.2.0"
 jsonargparse = {extras = ["all"], version = "^4.30.0"}
 seaborn = "^0.13.2"
+geopy = "^2.4.1"
+cartopy = "^0.23.0"
 
 [build-system]
 requires = ["poetry-core"]

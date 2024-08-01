@@ -26,7 +26,7 @@ def get_standardized_image(image):
 def get_normalized_image(image):
     return (image - image.min()) / (image.max() - image.min())
 
-def plot_classification_sample(ax: Axes, image, label_idx, label_str, ds_idx, ):
+def plot_classification_sample(ax: Axes, image, label_idx, label_str, ds_idx):
     image = get_normalized_image(image)
     ax.imshow(image.permute(1,2,0))
     ax.set_title(f"{label_str}({label_idx})[{ds_idx}]", fontsize = 10)
@@ -58,21 +58,22 @@ def plot_batch(dataset: Dataset, batch: tuple, batch_idx: int, save_to: Optional
     assert n >= 2, f"batch_size must be at least 2, got {n}"
     nrows = int(np.around(np.sqrt(n)))
     ncols = int(np.ceil(n / nrows))
-    
-    fig, axes = plt.subplots(nrows, ncols, figsize = (20, 20), layout = "constrained")
+
+    fig, axes = plt.subplots(nrows, ncols, figsize = (20, 20), layout = "tight")
     fig.suptitle(f"{dataset.name} :: batch: {batch_idx}", fontsize = 10)
     for idx, ax in enumerate(axes.ravel()):
         if idx < n: 
             image, label, ds_idx = images[idx], labels[idx], ds_idxs[idx]
-            match task:
-                case "classification":
-                    plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
-                case "segmentation":
-                    plot_segmentation_sample(ax, image, label, ds_idx)
+            if task == "classification":
+                plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
+            elif task == "segmentation":
+                plot_segmentation_sample(ax, image, label, ds_idx)
         ax.axis("off")
     if save_to is not None:
-        fig.savefig(save_to/f"{dataset.name}_batch={batch_idx}_plot.png")
-        plt.clf()
+        fig.savefig(save_to/f"batch={batch_idx}.png")
+        fig.clear()
+        #plt.clf()
+        #plt.cla()
         plt.close()
 
 def get_confusion_matrix_plot(mat: NDArray, class_names: Optional[tuple] = None, title: Optional[tuple] = None) -> Figure:

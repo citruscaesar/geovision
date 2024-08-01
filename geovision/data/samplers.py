@@ -91,7 +91,7 @@ def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: floa
             
     val = (df
             .drop(test.index, axis = 0)
-            .groupby("split_on", group_keys=False)
+            .groupby("label_str", group_keys=False)
             .apply(func = lambda x: x.sample( # type: ignore
                     frac = val_frac / (1-test_frac), random_state = random_seed, axis = 0),
                     include_groups = False
@@ -145,4 +145,4 @@ def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_samp
         .drop(val.index, axis = 0)
         .assign(split = "train")
     )
-    return pd.concat([train, val, test]).sort_index()
+    return pd.concat([train, val, test]).drop(columns = "split_on").sort_index()

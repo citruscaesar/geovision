@@ -6,7 +6,7 @@ from torchvision.transforms import v2 as T  # type: ignore
 from geovision.io.local import get_new_dir, get_ckpt_path
 from geovision.config.config import ExperimentConfig
 from geovision.data.module import ImageDatasetDataModule
-from geovision.models.modules import ClassificationModule
+from models.module import ClassificationModule
 from geovision.logging.loggers import get_csv_logger, get_ckpt_logger, get_classification_logger
 
 if __name__ == "__main__":

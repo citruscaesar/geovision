@@ -4,6 +4,7 @@ import yaml # type: ignore
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
+from torch.utils.data import DataLoader
 from torchmetrics import Metric
 from pathlib import Path
 from pydantic import BaseModel, field_validator 
@@ -86,6 +87,14 @@ class ExperimentConfig(BaseModel):
         if self.scheduler_ is None:
             return None
         return self.scheduler_(optimizer, **self.scheduler_params)
+    
+    def get_dataloader_params(self) -> DataLoader:
+        return {
+            "batch_size": self.dataloader_params.batch_size // self.dataloader_params.gradient_accumulation,
+            "num_workers": self.dataloader_params.num_workers,
+            "persistent_workers": self.dataloader_params.persistent_workers,
+            "pin_memory": self.dataloader_params.pin_memory
+        }
          
     def get_metric_params(self) -> dict:
         """get torchmetrics based on config.dataset and config.metric_params"""

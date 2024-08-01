@@ -17,9 +17,7 @@ from geovision.analysis.viz import get_confusion_matrix_plot
 from geovision.io.local import get_experiments_dir
 
 import logging
-
 logger = logging.getLogger(__name__)
-
 
 class ExperimentWriter:
     def __init__(self, experiments_dir: Path):

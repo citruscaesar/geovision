@@ -68,9 +68,8 @@ class Dataset(ABC):
         name, storage, task = self.name.split('_')
         return '\n'.join([
             f"{name} dataset for {task}",
-            f"local {storage} @ [{self.root}]",
-            f"with {len(self.class_names)} classes: {self.class_names}",
-            f"and {len(self)} images loaded under {self.split} split",
+            f"local {storage} @ [{self.root}] ",
+            f"with {len(self.class_names)} classes and {len(self)} images under the '{self.split}' split",
         ])
 
     @property

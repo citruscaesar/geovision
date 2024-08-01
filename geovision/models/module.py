@@ -1,25 +1,8 @@
-from typing import Any, Optional 
+from typing import Any
 
 import torch
 from lightning import LightningModule
 from geovision.config.config import ExperimentConfig
-from geovision.config.parsers import parse_task
-
-# class Classifier(LightningModule):
-    # def __init__(self, config: ExperimentConfig) -> None:
-        # super().__init__()
-        # self.encoder = config.get_encoder()
-        # self.classifier = config.get_decoder()
-        # self.criterion = config.get_criterion()
-    
-    # def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C' 
-        # # NOTE: Classification: (NCHW) -> model -> (NC') -> argmax(1) -> (N,)
-        # # NOTE: Segmentation: (NCHW) -> model -> (NC'HW) -> argmax(1) -> (NHW)
-        # images, labels = batch[0], batch[1]
-        # preds = self.decoder(self.encoder(images))
-        # loss = self.criterion(preds, labels)
-        # return preds, labels, loss
 
 class ClassificationModule(LightningModule):
     def __init__(self, config: ExperimentConfig) -> None:

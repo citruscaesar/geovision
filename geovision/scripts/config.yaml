@@ -1,6 +1,6 @@
 name: logging_test 
 random_seed: 42
-dataset: imagenette_imagefolder_classification
+dataset: imagenette_hdf5_classification
 dataset_params:
   df: null 
   test_sample: 0.2 
@@ -19,7 +19,7 @@ dataloader_params:
   gradient_accumulation: 1
   num_workers: 2 
   persistent_workers: True
-  pin_memory: False
+  pin_memory: True 
 
 metric: accuracy 
 metric_params: null
@@ -56,7 +56,7 @@ transforms_script: |
     T.ToDtype(float32, scale = False),
   ])
   train_aug = T.Compose([
-    T.Resize(224),
+    T.Resize((224)),
     T.RandomHorizontalFlip(0.5),
     T.RandomCrop((224, 224))
   ])

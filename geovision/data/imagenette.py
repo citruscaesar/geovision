@@ -105,9 +105,10 @@ class Imagenette:
             df
             .assign(image_path = lambda df: df["image_path"].apply(lambda x: Path(x.parents[1].stem, x.parents[0].stem, x.name)))
             .assign(label_str = lambda df: df["image_path"].apply(lambda x: x.parent.stem))
-            .sort_values("label_str")
             .assign(label_idx = lambda df: df["label_str"].apply(lambda x: class_synsets.index(x)))
             .assign(label_str = lambda df: df["label_idx"].apply(lambda x: cls.class_names[x]))
+            .assign(split_on = lambda df: df["label_str"])
+            .sort_values("label_str")
             .reset_index(drop = True)
         )
     
@@ -121,7 +122,7 @@ class ImagenetteImagefolderClassification(Dataset):
         "image_path": pa.Column(str, coerce = True),  
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
         "label_str": pa.Column(str, pa.Check.isin(Imagenette.class_names)),
-        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))
+        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits)),
     }, index = pa.Index(int, unique=True))
 
     split_df_schema = pa.DataFrameSchema({
@@ -179,8 +180,9 @@ class ImagenetteHDF5Classification(Dataset):
         "image_path": pa.Column(str, coerce = True),
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
         "label_str": pa.Column(str),
-        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))
+        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits)),
     }, index = pa.Index(int, unique=True))
+
     split_df_schema = pa.DataFrameSchema({
         "image_path": pa.Column(str, coerce = True),
         "df_idx": pa.Column(int),
@@ -202,6 +204,67 @@ class ImagenetteHDF5Classification(Dataset):
         idx_row = self._split_df.iloc[idx]
         with h5py.File(self._root, mode = "r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
+        image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
+        if self._config.image_pre is not None:
+            image = self._config.image_pre(image)
+        if self._split == "train" and self._config.train_aug is not None:
+            image = self._config.train_aug(image) 
+        elif self._split in ("val", "test"):
+            image = self._config.eval_aug(image)
+        return image, idx_row["label_idx"], idx_row["df_idx"]
+
+    @property
+    def root(self):
+        return self._root
+
+    @property
+    def split(self) -> Literal["train", "val", "trainval", "test", "all"]:
+        return self._split
+
+    @property
+    def df(self) -> pd.DataFrame:
+        return self._df
+
+    @property
+    def split_df(self) -> pd.DataFrame:
+        return self._split_df
+
+class ImagenetteInMemoryClassification(Dataset):
+    name = "imagenette_inmemory_classification" 
+    class_names = Imagenette.class_names
+    num_classes = Imagenette.num_classes 
+    means = Imagenette.means
+    std_devs = Imagenette.std_devs
+    df_schema = pa.DataFrameSchema({
+        "image_path": pa.Column(str, coerce = True),
+        "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
+        "label_str": pa.Column(str),
+        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits)),
+    }, index = pa.Index(int, unique=True))
+
+    split_df_schema = pa.DataFrameSchema({
+        "image_path": pa.Column(str, coerce = True),
+        "df_idx": pa.Column(int),
+        "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenette.num_classes)))),
+    }, index = pa.Index(int, unique=True))
+
+    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
+        self._root = get_valid_file_err(Imagenette.local/"hdf5"/"imagenette.h5")
+        self._split = get_valid_split(split)
+        self._config = config or Imagenette.default_config
+        logger.info(f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
+        self._df = get_df(self._config, self.df_schema, Imagenette.get_dataset_df_from_hdf5())
+        self._split_df = get_split_df(self._df, self.split_df_schema, self._split)
+
+        with h5py.File(self._root, mode = "r") as hdf5_file:
+            self._images = hdf5_file["images"][:]
+
+    def __len__(self):
+        return len(self._split_df)
+
+    def __getitem__(self, idx: int):
+        idx_row = self._split_df.iloc[idx]
+        image = iio.imread(BytesIO(self._images[idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
         if self._config.image_pre is not None:
             image = self._config.image_pre(image)

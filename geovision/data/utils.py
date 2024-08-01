@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Optional
 
 import pandas as pd
 import pandera as pa
