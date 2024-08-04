@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-torch = "^2.2.2"
+torch = {version = "2.2.2", source = "pytorch_cu121"}
 torchvision = "^0.17.2"
 torchgeo = "^0.5.2"
 lightning = "^2.2.2"
@@ -51,6 +51,11 @@ jsonargparse = {extras = ["all"], version = "^4.30.0"}
 seaborn = "^0.13.2"
 geopy = "^2.4.1"
 cartopy = "^0.23.0"
+
+[[tool.poetry.source]]
+name = "pytorch_cu121"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
 
 [build-system]
 requires = ["poetry-core"]

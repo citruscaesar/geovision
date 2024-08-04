@@ -1,6 +1,6 @@
-name: logging_test 
+name: testing_test 
 random_seed: 42
-dataset: imagenette_hdf5_classification
+dataset: imagenet_litdata_classification
 dataset_params:
   df: null 
   test_sample: 0.2 
@@ -15,11 +15,12 @@ dataset_params:
 
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 64 
+  batch_size: 128 
   gradient_accumulation: 1
-  num_workers: 2 
-  persistent_workers: True
-  pin_memory: True 
+  num_workers: 4 
+  persistent_workers: False
+  pin_memory: False 
+  prefetch_factor: 2
 
 metric: accuracy 
 metric_params: null
@@ -50,6 +51,7 @@ transforms_script: |
     T.ToImage(),
     T.ToDtype(float32, scale = True),
     T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    T.Resize((224, 224))
   ])
   target_pre = T.Compose([
     T.ToImage(),

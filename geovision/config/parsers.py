@@ -49,6 +49,7 @@ def validate_dataset_err(name: str):
         "imagenette_hdf5_classification",
         "imagenet_imagefolder_classification",
         "imagenet_hdf5_classification",
+        "imagenet_litdata_classification"
     ]
     if name not in _datasets:
         raise NotImplementedError(f"{name} must be one of {_datasets}")
@@ -82,6 +83,9 @@ def parse_dataset(name: str) -> Callable:
         case "imagenet_hdf5_classification":
             from geovision.data.imagenet import ImagenetHDF5Classification
             return ImagenetHDF5Classification 
+        case "imagenet_litdata_classification":
+            from geovision.data.imagenet import ImagenetLitDataClassification
+            return ImagenetLitDataClassification
         case _:
             return 
 

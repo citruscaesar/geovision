@@ -34,3 +34,4 @@ class DataLoaderConfig(BaseModel):
     gradient_accumulation: int
     persistent_workers: bool
     pin_memory: bool
+    prefetch_factor: int

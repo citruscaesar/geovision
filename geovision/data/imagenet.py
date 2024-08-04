@@ -1,9 +1,10 @@
 from typing import Literal, Optional
 
+import h5py  # type: ignore
 import torch
 import zipfile
 import shutil
-import h5py  # type: ignore
+import litdata
 import numpy as np
 import pandas as pd
 import pandera as pa
@@ -16,8 +17,12 @@ from tqdm import tqdm
 from io import BytesIO #
 from .dataset import Dataset
 from .config import DatasetConfig
-from .utils import get_valid_split, get_df, get_split_df
+from torchvision.io import read_image, ImageReadMode
+from .utils import get_valid_split, get_df, get_split_df, _get_split_df
 from geovision.io.local import get_valid_file_err, get_valid_dir_err, get_new_dir
+
+# import warnings
+# warnings.filterwarnings("ignore")
 
 import logging
 logger = logging.getLogger(__name__)
@@ -144,23 +149,22 @@ class Imagenet:
     default_config = DatasetConfig(
         random_seed=42,
         test_sample=0,
-        val_sample=0.05,
+        val_sample=0.04,
         tabular_sampling="imagefolder_notest",
         image_pre=T.Compose([
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Resize(224, antialias=True),
+            T.ToImage(),
+            T.ToDtype(torch.float32, scale=True),
+            T.Resize(224, antialias=True),
         ]),
         target_pre=T.Identity(),
         train_aug=T.RandomHorizontalFlip(0.5),
         eval_aug=T.Identity(),
     )
-    erroneous_images = tuple()
 
     @classmethod
     def download(cls):
         r"""download and save imagenet1k archive to :imagenette/archives/imagenet-object-localization-challenge.zip"""
-        raise NotImplementedError
+        pass
 
     @classmethod
     def transform_to_imagefolder(cls):
@@ -195,13 +199,14 @@ class Imagenet:
             .assign(temp_path=lambda df: df["ImageId"].apply(lambda x: temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "val" / f"{x}.JPEG"))
             .assign(parent_dir=lambda df: df["PredictionString"].apply(lambda x: x.split(" ")[0]))
             .assign(image_path=lambda df: df.apply(lambda x: imagefolder_path / "val" / x["parent_dir"] / f"{x["ImageId"]}.jpg", axis=1))
+            .drop(columns = ["ImageId", "PredictionString"])
         )
         for _, row in tqdm(val_df.iterrows(), total=len(val_df), desc=f"{imagefolder_path/"val"}"):
-            shutil.move(row["temp_path"], row["image_path"])
+            shutil.copy(row["temp_path"], row["image_path"])
 
         # move test
         for temp_path in tqdm(list((temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "test").rglob("*.JPEG")), desc=f"{imagefolder_path/"test"}"):
-            shutil.move(temp_path, test_dir / f"{temp_path.stem}.jpg")
+            shutil.copy(temp_path, test_dir / f"{temp_path.stem}.jpg")
 
         # cleanup
         shutil.rmtree(temp_path)
@@ -216,14 +221,27 @@ class Imagenet:
             val_samples = df["image_path"].apply(lambda x: True if "val" in x else False)
             df = df[val_samples].assign(idx = lambda df: df.index).reset_index(drop = True)
             hdf5 = hdf5.parent / "imagenet_val.h5"
-        df.to_hdf(hdf5, mode="w", key="df")
 
+        df.to_hdf(hdf5, mode="w", key="df")
         with zipfile.ZipFile(get_valid_file_err(cls.archive)) as zf:
             with h5py.File(hdf5, mode="r+") as h5file:
                 images = h5file.create_dataset("images", (len(df),), h5py.special_dtype(vlen=np.dtype("uint8")))
                 for idx, row in tqdm(df.iterrows(), total=len(df)):
                     images[idx] = np.frombuffer(zf.read(row["image_path"]), dtype=np.uint8)
-
+    
+    @classmethod
+    def get_dataset_df_from_litdata(cls, config: Optional[DatasetConfig] = None, schema: Optional[pa.DataFrameSchema] = None) -> pd.DataFrame:
+        try:
+            return pd.read_csv(cls.local / "litdata" / "dataset.csv")
+        except OSError:
+            if config is None:
+                raise ValueError("since dataset df not found at :imagenet/litdata, config cannot be none")
+            return (
+                get_df(config, schema, cls.get_dataset_df_from_imagefolder().reset_index(drop = False, names = "df_idx"))
+                .assign(image_path = lambda df: df["image_path"].apply(lambda x: cls.local / "imagefolder" / Path(x)))
+            )
+            # NOTE: don't save df to litdata dir here, it is saved by worker 0 in the litdata encoder script
+    
     @classmethod
     def get_dataset_df_from_archive(cls) -> pd.DataFrame:
         """generates and returns dataset_df from :imagenet/archive/imagenet-object-localization-challenge.zip, raises OSError if archive is not found"""
@@ -250,7 +268,7 @@ class Imagenet:
             df = (
                 pd.DataFrame({"image_path": list((imagefolder / "train").rglob("*.jpg")) + list((imagefolder / "val").rglob("*.jpg"))})
                 .assign(image_path=lambda df: df["image_path"].apply(lambda x: Path(x.parents[1].stem, x.parents[0].stem, x.name)))
-                .assign(label_str=lambda df: df["image_path"].apply(lambda x: x.parent.stem))
+                .assign(label_synset=lambda df: df["image_path"].apply(lambda x: x.parent.stem))
                 .pipe(cls._get_dataset_df)
             )
             df.to_csv(imagefolder / "labels.csv", index=False)
@@ -264,6 +282,7 @@ class Imagenet:
             .sort_values("label_synset")
             .assign(label_idx=lambda df: df["label_synset"].apply(lambda x: synsets.index(x)))
             .assign(label_str=lambda df: df["label_idx"].apply(lambda x: cls.class_names[x]))
+            .assign(split_on=lambda df: df["label_str"])
             .reset_index(drop=True)
         )
 
@@ -271,10 +290,6 @@ class Imagenet:
     def get_dataset_df_from_hdf5(cls) -> pd.DataFrame:
         """returns imagenet dataset_df stored in :imagenet/hdf5/imagenet.h5/df, raises OSError if h5 file is not found, and KeyError if df is not found in h5"""
         return pd.read_hdf(get_valid_file_err(cls.local / "hdf5" / "imagenet.h5"), key="df", mode="r")  # type: ignore
-
-    @classmethod
-    def remove_erroneous_images(cls, df: pd.DataFrame) -> pd.DataFrame:
-        return df.drop(index=cls.erroneous_images).reset_index(drop=True)
 
 class ImagenetImagefolderClassification(Dataset):
     name = "imagenet_imagefolder_classification"
@@ -301,7 +316,6 @@ class ImagenetImagefolderClassification(Dataset):
         self._config = config or Imagenet.default_config
         logger.info(f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
         self._df = get_df(self._config, self.df_schema, Imagenet.get_dataset_df_from_imagefolder())
-        self._df = Imagenet.remove_erroneous_images(self._df)
         self._split_df = get_split_df(self._df, self.split_df_schema, self._split, self._root)
 
     def __len__(self):
@@ -309,8 +323,9 @@ class ImagenetImagefolderClassification(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
         idx_row = self._split_df.iloc[idx]
-        image = iio.imread(idx_row["image_path"]).squeeze()
-        image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
+        image = read_image(idx_row["image_path"], mode = ImageReadMode.RGB)
+        #image = iio.imread(idx_row["image_path"]).squeeze()
+        #image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
         image = self._config.image_pre(image)
         if self._split == "train":
             image = self._config.train_aug(image)
@@ -359,7 +374,6 @@ class ImagenetHDF5Classification(Dataset):
         self._config = config or Imagenet.default_config
         logger.info(f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}")
         self._df = get_df(self._config, self.df_schema, Imagenet.get_dataset_df_from_hdf5())
-        self._df = Imagenet.remove_erroneous_images(self._df)
         self._split_df = get_split_df(self._df, self.split_df_schema, self._split, self._root)
 
     def __len__(self) -> int:
@@ -393,6 +407,67 @@ class ImagenetHDF5Classification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
+class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
+    name = "imagenet_litdata_classification"
+    class_names = Imagenet.class_names
+    num_classes = Imagenet.num_classes
+    means = Imagenet.means
+    std_devs = Imagenet.std_devs
+    df_schema = pa.DataFrameSchema({
+        "image_path": pa.Column(str, coerce=True),
+        "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenet.num_classes)))),
+        "label_str": pa.Column(str),
+        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits)),
+    }, index=pa.Index(int, unique=True))
+
+    split_df_schema = pa.DataFrameSchema({
+        "image_path": pa.Column(str, coerce=True),
+        "df_idx": pa.Column(int),
+        "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, Imagenet.num_classes)))),
+    }, index=pa.Index(int, unique=True))
+
+    def __init__(self, split: Literal["train", "val", "test"] = "train", config: Optional[DatasetConfig] = None):
+        assert split in ("train", "val", "test"), f"invalid :split, got {split}"
+        self._root = get_valid_dir_err(Imagenet.local / "litdata" / split)
+        self._split = split 
+        self._config = config or Imagenet.default_config
+        self._df = self.df_schema(Imagenet.get_dataset_df_from_litdata())
+        self._split_df = get_split_df(self._df, self.split_df_schema, split)
+        super().__init__(
+            input_dir = str(self._root),
+            shuffle = True if split == "train" else False,
+            drop_last = False,
+            seed = config.random_seed,
+            max_cache_size = "200GB"
+        )
+    
+    def __getitem__(self, idx: int):
+        data = super().__getitem__(idx)
+        image = self._config.image_pre(data["image"])
+        if self._split == "train":
+            image = self._config.train_aug(image)
+        elif self._split in ("val", "test"):
+            image = self._config.eval_aug(image)
+        return image, data["label_idx"], data["df_idx"]
+
+    @property
+    def root(self):
+        return self._root
+
+    @property
+    def split(self) -> Literal["train", "val", "test"]:
+        return self._split
+
+    @property
+    def df(self) -> pd.DataFrame:
+        return self._df
+
+    @property
+    def split_df(self) -> pd.DataFrame:
+        return self._split_df
+
 if __name__ == "__main__":
     Imagenet.download()
+    Imagenet.transform_to_imagefolder()
     Imagenet.transform_to_hdf()
+    litdata.StreamingDataLoader()

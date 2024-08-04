@@ -126,7 +126,8 @@ def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_samp
         raise ValueError(f":val_sample must be [0, 1], got {val_sample}")
 
     df = pa.DataFrameSchema({"split_on": pa.Column(str)})(df)
-    test_filter = df["image_path"].apply(lambda x: str(x).startswith("val/"))
+    #test_filter = df["image_path"].apply(lambda x: str(x).startswith("val/"))
+    test_filter = df["image_path"].apply(lambda x: "val" in str(x))
     if len(test_filter) == 0:
         raise KeyError("couldn't find samples inside 'val/' dir in the df")
     test = (
