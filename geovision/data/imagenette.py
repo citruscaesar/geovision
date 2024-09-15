@@ -52,7 +52,6 @@ class Imagenette:
     @classmethod
     def transform_to_imagefolder(cls) -> None:
         """extracts files from archive to :imagenette/imagefolder, raises OSError if :imagenette/archives/imagenette2.tgz not found"""
-
         def move_tempfiles_to_imagefolder(split: Literal["train", "val"]):
             for src_path in tqdm(list((temp_path/"imagenette2"/split).rglob("*.JPEG")), desc = f"{imagefolder_path/split}"):
                 dst_path = imagefolder_path/split/src_path.parent.stem/f"{src_path.stem}.jpg"
@@ -146,9 +145,8 @@ class ImagenetteImagefolderClassification(Dataset):
         idx_row = self._split_df.iloc[idx]
         image = iio.imread(idx_row["image_path"], format_hint=".jpg").squeeze()
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        if self._config.image_pre is not None:
-            image = self._config.image_pre(image)
-        if self._split == "train" and self._config.train_aug is not None:
+        image = self._config.image_pre(image)
+        if self._split == "train":
             image = self._config.train_aug(image) 
         elif self._split in ("val", "test"):
             image = self._config.eval_aug(image)
@@ -205,9 +203,8 @@ class ImagenetteHDF5Classification(Dataset):
         with h5py.File(self._root, mode = "r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        if self._config.image_pre is not None:
-            image = self._config.image_pre(image)
-        if self._split == "train" and self._config.train_aug is not None:
+        image = self._config.image_pre(image)
+        if self._split == "train":
             image = self._config.train_aug(image) 
         elif self._split in ("val", "test"):
             image = self._config.eval_aug(image)
@@ -266,9 +263,8 @@ class ImagenetteInMemoryClassification(Dataset):
         idx_row = self._split_df.iloc[idx]
         image = iio.imread(BytesIO(self._images[idx_row["df_idx"]]))
         image = np.stack((image,)*3, axis = -1) if image.ndim == 2 else image
-        if self._config.image_pre is not None:
-            image = self._config.image_pre(image)
-        if self._split == "train" and self._config.train_aug is not None:
+        image = self._config.image_pre(image)
+        if self._split == "train":
             image = self._config.train_aug(image) 
         elif self._split in ("val", "test"):
             image = self._config.eval_aug(image)

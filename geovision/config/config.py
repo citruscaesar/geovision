@@ -112,7 +112,7 @@ class ExperimentConfig(BaseModel):
         return metric_params
     
     def get_metric(self, metric_name: Optional[str] = None, addl_params: Optional[dict] = None) -> Metric:
-        """get a torchmetric instance using config.dataset and config.metric_params, :metric_name defaults to config.metric, raises NotImplementedError if :metric_name is not found by parser"""
+        """get a torchmetric instance of :metric_name which defaults to config.metric, using parameters from config.dataset and config.metric_params. Raises NotImplementedError if :metric_name is not found by parser"""
         metric_params = self.get_metric_params() 
         if addl_params is not None:
             metric_params.update(addl_params)

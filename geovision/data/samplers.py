@@ -5,6 +5,8 @@ from .config import DatasetConfig
 import logging
 logger = logging.getLogger(__name__)
 
+# TODO: add argument (type and value) validation to all samplers
+
 def tabular_sampler(df: pd.DataFrame, config: DatasetConfig) -> pd.DataFrame:
     match config.tabular_sampling:
         case None:
@@ -78,8 +80,9 @@ def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: floa
     SchemaError
     """ 
     df = pa.DataFrameSchema({"split_on": pa.Column(str)})(df)
-    if not (test_frac + val_frac < 1):
-        raise ValueError(f":test_sample + :val_sample = must be < 1, got {test_frac+val_frac}")
+    assert isinstance(test_frac, float), f"config error (invalid type), expected :test_frac to be of type float, got {type(test_frac)}"
+    assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
+    assert test_frac + val_frac > 0 and test_frac + val_frac < 1, f"config error (invalid value), expected 0 < :test_frac + :val_frac < 1, got :test_frac={test_frac} and :val_frac={val_frac}"
 
     test = (df
             .groupby("split_on", group_keys=False)
@@ -118,15 +121,14 @@ def _get_imagefolder_split_df(df: pd.DataFrame) -> pd.DataFrame:
     format in df["image_path"]"""
     return df.assign(split = lambda df: df["image_path"].apply(lambda x: x.split('/')[0]))
 
-def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_sample: float) -> pd.DataFrame:
-    """returns df by assigning test split to samples in the val/ directory, and val samples are assigned in a stratified
-    manner based on :random_seed and :val_sample from the train/ directory; rest are assigned train"""
-
-    if not val_sample <= 1.0:
-        raise ValueError(f":val_sample must be [0, 1], got {val_sample}")
+def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_frac: float) -> pd.DataFrame:
+    """returns df by assigning test split to samples in the val/ directory, and val samples are assigned based on :val_frac
+    in a stratified manner from the train/ directory; rest are assigned train"""
 
     df = pa.DataFrameSchema({"split_on": pa.Column(str)})(df)
-    #test_filter = df["image_path"].apply(lambda x: str(x).startswith("val/"))
+    assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
+    assert val_frac > 0 and val_frac < 1.0, f"config error (invalid value), expected 0 < :val_frac < 1, got :val_frac={val_frac}"
+
     test_filter = df["image_path"].apply(lambda x: "val" in str(x))
     if len(test_filter) == 0:
         raise KeyError("couldn't find samples inside 'val/' dir in the df")
@@ -137,7 +139,7 @@ def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_samp
     val = (
         df.drop(test.index, axis = 0)
         .groupby("split_on", group_keys=False)
-        .apply(lambda x: x.sample(frac = val_sample, random_state = random_seed, axis = 0), include_groups = False)
+        .apply(lambda x: x.sample(frac = val_frac, random_state = random_seed, axis = 0), include_groups = False)
         .assign(split = "val")
     )
     train = (

@@ -1,17 +1,19 @@
-name: testing_test 
+project_name: ilsvrc
+run_name: logging_test 
 random_seed: 42
-dataset: imagenet_litdata_classification
+
+dataset_name: imagenet_hdf5_classification
 dataset_params:
   df: null 
-  test_sample: 0.2 
-  val_sample: 0.05
-  tabular_sampling: imagefolder_notest 
-  # spatially tile along the x axis: tile_x = (size_x, stride_x)
-  tile_x: []
-  # spatially tile along the y axis: tile_y = (size_y, stride_y)
-  tile_y: []
-  spatial_sampling: null 
-  bands: [] 
+  tabular_sampler_name: imagefolder_notest
+  tabular_sampler_params:
+    val_frac: 0.05
+  spatial_sampler_name: null
+  spatial_sampler_params:
+    tile_x: []
+    tile_y: []
+  spectral_sampler_name: null 
+  spectral_sampler_params: null
 
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
@@ -22,27 +24,29 @@ dataloader_params:
   pin_memory: False 
   prefetch_factor: 2
 
-metric: accuracy 
+metric_name: accuracy 
 metric_params: null
 
-nn: alexnet 
-nn_params:
+model_name: alexnet 
+model_params:
   num_layers: null 
   weights: imagenet 
 
-criterion: cross_entropy
+criterion_name: cross_entropy
 criterion_params:
   reduction: mean
 
-optimizer: sgd 
+optimizer_name: sgd 
 optimizer_params:
    lr: 5.0e-6
    momentum: 0.9
    weight_decay: 5.0e-4
 
-scheduler: null
+scheduler_name: reduce_lr_on_plateau 
 scheduler_params:
   gamma: 0.1
+scheduler_config_params:
+  monitor: val_loss
 
 transforms_script: |
   from torch import float32

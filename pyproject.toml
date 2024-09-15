@@ -7,10 +7,8 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-torch = {version = "2.2.2", source = "pytorch_cu121"}
-torchvision = "^0.17.2"
 torchgeo = "^0.5.2"
-lightning = "^2.2.2"
+lightning = "^2.4.0"
 transformers = "^4.40.0"
 captum = "^0.7.0"
 scikit-learn = "^1.4.2"
@@ -35,7 +33,7 @@ python-dotenv = "^1.0.1"
 ruff = "0.5.3"
 mypy = "^1.9.0"
 pydantic = "^2.7.0"
-pandera = {extras = ["geopandas", "io", "mypy"], version = "^0.18.3"}
+pandera = "^0.20.3"
 pyyaml = "^6.0.1"
 sqlalchemy = "^2.0.29"
 pytest = "^8.1.1"
@@ -51,10 +49,12 @@ jsonargparse = {extras = ["all"], version = "^4.30.0"}
 seaborn = "^0.13.2"
 geopy = "^2.4.1"
 cartopy = "^0.23.0"
+torch = {version = "^2.4.0+cu124", source = "pytorch_cu124"}
+torchvision = {version = "^0.19.0+cu124", source = "pytorch_cu124"}
 
 [[tool.poetry.source]]
-name = "pytorch_cu121"
-url = "https://download.pytorch.org/whl/cu121"
+name = "pytorch_cu124"
+url = "https://download.pytorch.org/whl/cu124"
 priority = "explicit"
 
 [build-system]

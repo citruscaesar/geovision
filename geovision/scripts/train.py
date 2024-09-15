@@ -30,13 +30,14 @@ if __name__ == "__main__":
         format="%(asctime)s : %(name)s : %(levelname)s : %(message)s",
         level=logging.INFO,
     )
-    csv_logger = get_csv_logger(config)
-    ckpt_logger = get_ckpt_logger(config)
-    metrics_logger = get_classification_logger(config)
 
-    trainer = Trainer(
-        logger=[csv_logger], callbacks=[ckpt_logger, metrics_logger], **config.trainer_params
-    )
+    logger = [csv_logger:=get_csv_logger(config)]
+    callbacks = list()
+    callbacks.append(metrics_logger:=get_classification_logger(config))
+    if config.trainer_params["enable_checkpointing"]:
+        callbacks.append(ckpt_logger:=get_ckpt_logger(config))
+
+    trainer = Trainer(logger=logger, callbacks=callbacks, **config.trainer_params)
 
     if config.trainer_task == "fit":
         trainer_fn = trainer.fit
