@@ -15,10 +15,9 @@ from matplotlib.cm import tab20b, tab20c, Blues
 from matplotlib.lines import Line2D
 from matplotlib.table import Table
 
-from geovision.data.dataset import Dataset
-from geovision.config.config import ExperimentConfig
-from geovision.io.local import get_experiments_dir
-from geovision.analysis.metrics import get_classification_metrics_df, get_classification_metrics_dict
+from geovision.data.interfaces import Dataset
+from geovision.experiment.config import ExperimentConfig
+from geovision.experiment.metrics import get_classification_metrics_df, get_classification_metrics_dict
 
 def get_standardized_image(image):
     return (image - image.mean()) / image.std()
@@ -81,49 +80,6 @@ def get_confusion_matrix_plot(mat: NDArray, class_names: Optional[tuple] = None,
     plot_confusion_matrix(ax, mat, class_names, title)
     return fig
 
-def plot_confusion_matrix(ax: Axes, mat: NDArray, class_names: Optional[tuple] = None, title: Optional[tuple] = None):
-    metrics_df = get_classification_metrics_df(get_classification_metrics_dict(mat, class_names))
-
-    if title is not None:
-        ax.title(title, fontsize = 10)
-    ax.imshow(mat, cmap = Blues)
-    ax.set_xlabel("Predicted Class", fontsize = 10)
-    ax.set_xticks(list(range(mat.shape[0])))
-    ax.xaxis.set_label_position("top")
-
-    ax.set_ylabel("True Class", fontsize = 10)
-    ax.set_yticks(list(range(mat.shape[0])))
-    ax.yaxis.set_label_position("left")
-
-    for r in range(mat.shape[0]):
-        for c in range(mat.shape[0]):
-            ax.text(y = r, x = c, s = f"{int(mat[r, c]):2d}", ha = "center", va = "center", fontsize=10)
-
-    header_table = Table(ax, loc = "top right")
-    for c_idx, c_name in enumerate(("CLS", "P", "R", "F1", "IoU", "sup")):
-        w = 1/mat.shape[0]
-        header_table.add_cell(row=0, col=c_idx, width=3*w if c_name == "CLS" else w, height=1/mat.shape[0], text=c_name, loc = "center")
-    ax.add_table(header_table)
-
-    metric_table = Table(ax, loc = "right")
-    for r_idx, (name, row) in enumerate(metrics_df.iloc[:-3].iterrows()):
-        metric_table.add_cell(row=r_idx, col=0, width=3*w, height=1/mat.shape[0], text=name, loc="center")
-        for c_idx, metric in enumerate(row): 
-            if c_idx == 4:
-                metric_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/mat.shape[0], text=f"{int(metric)}", loc="center")
-            else:
-                metric_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/mat.shape[0], text=f"{metric:.2f}", loc="center", facecolor = Blues(metric))
-    ax.add_table(metric_table)
-
-    addl_table = Table(ax, loc = "bottom right")
-    for r_idx, (name, row) in enumerate(metrics_df.iloc[-3:].iterrows()):
-        addl_table.add_cell(row=r_idx, col=0, width=3*w, height=1/(2*mat.shape[0]), text=name, loc="center")
-        for c_idx, metric in enumerate(row): 
-            if c_idx == 4:
-                addl_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/(2*mat.shape[0]), text=f"{int(metric)}", loc="center")
-            else: 
-                addl_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/(2*mat.shape[0]), text=f"{metric:.2f}", loc="center", facecolor = Blues(metric))
-    ax.add_table(addl_table)
 
 def plot_inference_sample_for_classification(ax, sample: NDArray, logits: NDArray, class_names: tuple[str]):
     pass
@@ -190,7 +146,7 @@ def plot_runs(config: ExperimentConfig):
     epoch_ax = fig.add_subplot(gs[:, 5:-1])
     run_ax = fig.add_subplot(gs[:, -1])
 
-    with h5py.File(get_experiments_dir(config)/"experiment.h5") as logfile:
+    with h5py.File(config.experiments_dir/"experiment.h5") as logfile:
         runs = sorted(logfile.keys())
 
     lines: list[dict[str, Line2D]] = []

@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from geovision.config.parsers import get_dataset 
+from geovision.experiment.parsers import get_dataset 
 
 def pytest_addoption(parser):
     parser.addoption(

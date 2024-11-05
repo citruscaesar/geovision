@@ -1,10 +1,9 @@
-from typing import Any, Optional
+from typing import Optional
 from numpy.typing import NDArray
 
 import numpy as np
 import pandas as pd
 
-# TODO: refactor get_classification_metrics to store metrics in dict and generate df afterwords
 # TODO: add support for multilabel classification metrics
 
 def get_classification_metrics_dict(conf_mat: NDArray, class_names: Optional[tuple[str]] = None) -> dict[str, list]:

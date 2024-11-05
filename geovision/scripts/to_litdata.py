@@ -7,8 +7,8 @@ import pandas as pd
 import pandera as pa
 from pathlib import Path
 from litdata import optimize
-from geovision.io.local import get_new_dir
-from geovision.data.config import DatasetConfig
+from geovision.io.local import FileSystemIO as fs
+from geovision.data.interfaces import DatasetConfig
 
 def get_classification_sample(idx:int) -> dict:
     row = df.iloc[idx]
@@ -30,7 +30,6 @@ def get_dataset_name_and_config() -> tuple[str, DatasetConfig]:
     argparser = argparse.ArgumentParser(prog = "Encode Imagefolder Dataset to Litdata", epilog = "\n")
     argparser.add_argument("--config", default = "config.yaml", help = "path to config file", dest = "config_path")
     args = argparser.parse_args()
-    #print(args)
 
     with open(args.config_path) as f:
         config_dict = yaml.load(f, Loader=yaml.Loader)
@@ -46,51 +45,51 @@ def get_dataset_info() -> tuple[pd.DataFrame, Path, Callable]:
     if task == "classification":
         fn = get_classification_sample
         schema = pa.DataFrameSchema({
-                "image_path": pa.Column(str, coerce=True), 
-                "label_idx": pa.Column(int, coerce=True),
-                "df_idx": pa.Column(int, coerce=True, unique = True)
+            "image_path": pa.Column(str, coerce=True), 
+            "label_idx": pa.Column(int, coerce=True),
+            "df_idx": pa.Column(int, coerce=True, unique = True)
         })
     elif task == "segmentation":
         fn = get_segmentation_sample
         schema = pa.DataFrameSchema({
-                "image_path": pa.Column(str, coerce=True), 
-                "mask": pa.Column(str, coerce=True),
-                "df_idx": pa.Column(int, coerce=True, unique = True)
+            "image_path": pa.Column(str, coerce=True), 
+            "mask": pa.Column(str, coerce=True),
+            "df_idx": pa.Column(int, coerce=True, unique = True)
         })
     else:
         raise NotImplementedError("unexpected task in dataset name, got {task}")
 
     if name == "imagenet":
-        from geovision.data.imagenet import Imagenet
-        return Imagenet.get_dataset_df_from_litdata(config, schema), Imagenet.local / "litdata", fn
+        from geovision.data.imagenet import ImagenetETL
+        return ImagenetETL.get_dataset_df_from_litdata(config, schema), ImagenetETL.local / "litdata", fn
     elif name == "imagenette":
-        from geovision.data.imagenette import Imagenette
-        return Imagenette.get_dataset_df_from_litdata(config, schema), Imagenette.local / "litdata", fn
+        from geovision.data.imagenet import ImagenetteETL
+        return ImagenetteETL.get_dataset_df_from_litdata(config, schema), ImagenetteETL.local / "litdata", fn
     else:
         raise NotImplementedError("unexprected dataset in dataset name, got {name}")
 
 df, litdata_dir, fn = get_dataset_info()
 
 if __name__ == "__main__":
-    df.to_csv(get_new_dir(litdata_dir) / "dataset.csv", index = False)
+    df.to_csv(fs.get_new_dir(litdata_dir) / "dataset.csv", index = False)
     optimize(
         fn = fn,
         inputs = df[df["split"] == "train"].index.tolist(),
-        output_dir = str(get_new_dir(litdata_dir / "train")),
-        chunk_bytes = "1GB",
+        output_dir = str(fs.get_new_dir(litdata_dir / "train")),
+        chunk_bytes = "512MB",
         num_workers = 4
     )
     optimize(
         fn = fn,
         inputs = df[df["split"] == "val"].index.tolist(),
-        output_dir = str(get_new_dir(litdata_dir / "val")),
-        chunk_bytes = "1GB",
+        output_dir = str(fs.get_new_dir(litdata_dir / "val")),
+        chunk_bytes = "512MB",
         num_workers = 4
     )
     optimize(
         fn = fn,
         inputs = df[df["split"] == "test"].index.tolist(),
-        output_dir = str(get_new_dir(litdata_dir / "test")),
-        chunk_bytes = "1GB",
+        output_dir = str(fs.get_new_dir(litdata_dir / "test")),
+        chunk_bytes = "512MB",
         num_workers = 4
     )

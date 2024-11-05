@@ -8,7 +8,32 @@ from aiohttp import ClientSession, ClientTimeout
 from tqdm import tqdm
 from pathlib import Path
 from urllib.parse import urlparse
-from .local import is_dir_path
+
+class S3IO:
+    access_key = None
+    secret_key = None
+    endpoint_url = None
+    no_sign_request = True
+
+    def __init__(self, access_key: str, secret_key: str, endpoint_url: str):
+        # use :keys, if not provided, look into environment_variables, otherwise use --no-sign-request
+        pass
+
+    def list_contents(self, remote: Path):
+        # display tree with contents and file sizes in MB
+        pass
+
+    def download_item(remote: Path, local: Path):
+        pass
+
+    def upload_item(local: Path, remote: Path):
+        pass
+
+    def sync_dir(remote: Path, local: Path):
+        pass
+
+    def clear_failed_uploads(remote: Path):
+        pass
 
 class HTTPIO:
     @staticmethod
@@ -20,13 +45,10 @@ class HTTPIO:
         r"""Download a file from :remote to :local over HTTP. If :local points to a directory, it is
         created if it does not exist and the filename is inferred from :remote."""
 
-        local = local.expanduser()
-        if is_dir_path(local):
-            Path.mkdir(local, exist_ok=True, parents=True)
-            filename = cls.get_filename_from_url(remote)
-            local = local / filename 
-        else:
-            Path.mkdir(local.parent, exist_ok=True, parents=True)
+        local = local.resolve().expanduser()
+        Path.mkdir(local, exist_ok=True, parents=True)
+        filename = cls.get_filename_from_url(remote)
+        local = local / filename 
 
         response = requests.get(remote, stream = True)
         total_size = int(response.headers.get("content-length", 0))

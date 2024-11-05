@@ -1,24 +1,28 @@
-from typing import Literal
+from typing import Literal, Optional
 
 import shutil
 import h5py
 import PIL
 import json
-import tarfile
+import torch
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import pandera as pa
-from tqdm import tqdm
-from pathlib import Path
 import imageio.v3 as iio
-from .dataset import Dataset
 import matplotlib.pyplot as plt
+
+from tqdm import tqdm
+from io import BytesIO
+from pathlib import Path
 from matplotlib.patches import Rectangle 
-from geovision.io.local import get_new_dir, get_valid_file_err, is_empty_dir, get_valid_dir_err
+from torchvision.transforms import v2 as T
 from skimage.transform import resize
 
-class FMoW:
+from .interfaces import Dataset, DatasetConfig
+from geovision.io.local import FileSystemIO as fs
+
+class FMoWETL:
     local_ms = Path.home()/"datasets"/"fmow-full"
     local_rgb = Path.home()/"datasets"/"fmow-rgb"
     local_sentinel = Path.home()/"datasets"/"fmow-sentinel"
@@ -50,16 +54,41 @@ class FMoW:
         "airport", "amusement_park", "impoverished_settlement", 
         "nuclear_powerplant", "port", "runway", "shipyard", "space_facility"
     )
+    # fmt: on
 
     crs = "EPSG:4326"
-    # fmt: on
+    spatial_ref = "GCS_WGS_1984"
+    num_classes = len(class_names)
+    means = () 
+    std_devs = ()
+
+    default_config = DatasetConfig(
+        random_seed = 42,
+        tabular_sampler_name = "stratified",
+        tabular_sampler_params = dict(
+            test_frac = 0.2,
+            val_frac = 0.1
+        ),
+        image_pre = T.Compose([
+            T.ToImage(), 
+            T.ToDtype(torch.float32, scale = True)
+        ]), 
+        target_pre = None, 
+        train_aug = T.Compose([
+            T.Resize(512),
+            T.RandomCrop(256),
+            T.RandomHorizontalFlip(0.5),
+        ]), 
+        eval_aug = T.TenCrop(256, vertical_flip = True), 
+    )
+
 
     @classmethod
     def download_from_source(cls, dataset: Literal["rgb", "ms", "sentinel"] = "rgb"):
         """
         downloads fmow-{:dataset} from s3://spacenet-datasets/HostedDatasets/fmow/fmow-{:dataset} to :local_staging/:dataset
         cp train val test and seq directories, ignoring all .json files
-        cp groundtruth.tar.bz2 and extract to :local_staging/:dataset/groundtruth/, removing _gt from test and seq dirs
+        cp groundtruth.tar.bz2 and extract to :local_staging/:dataset/groundtruth/, removing _gt from test and seq dirs, mapping jsons
         """
         pass
 
@@ -89,11 +118,11 @@ class FMoW:
             metadata_df = pd.read_hdf(cls.local_staging / dataset / "metadata.h5", key = "dataset_df", mode = 'r')
         except OSError:
             #metadata_dir = get_valid_dir_err(cls.local_staging / dataset / "groundtruth", empty_ok=False)
-            metadata_dir = get_valid_dir_err(cls.local_rgb / "groundtruth", empty_ok=False)
+            metadata_dir = fs.get_valid_dir_err(cls.local_rgb / "groundtruth", empty_ok=False)
             metadata = ["parent_dir", "label_str", "bbox"]
             metadata += [
                 "img_filename", "gsd", "img_width", "img_height", "mean_pixel_height", "mean_pixel_width", "utm", "country_code", "cloud_cover", "timestamp",
-                "scan_direction", "approximate_wavelengths", "catalog_id", "sensor_platform_name", "raw_location", "spatial_reference", "epsg"#, "abs_cal_factors"
+                "scan_direction", "approximate_wavelengths", "catalog_id", "sensor_platform_name", "raw_location"#, "abs_cal_factors"
             ]
             metadata += [f"{x}{y}_dbl" for x in ("pan_resolution", "multi_resolution", "target_azimuth", "off_nadir_angle") for y in ("", "_start", "_end", "_min", "_max")]
             metadata += [f"{x}{y}_dbl" for x in ("sun_azimuth", "sun_elevation") for y in ("", "_min", "_max")]
@@ -109,8 +138,8 @@ class FMoW:
                     for key in metadata[3:]:
                         metadata_dict[key].append(json_parsed[key])
 
-            test_df = pd.read_json(cls.local_staging / dataset /"groundtruth"/"test_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("test_gt", "test")))
-            seq_df = pd.read_json(cls.local_staging / dataset /"groundtruth"/"seq_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("seq_gt", "seq")))
+            test_df = pd.read_json(cls.local_rgb /"groundtruth"/"test_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("test_gt", "test")))
+            seq_df = pd.read_json(cls.local_rgb /"groundtruth"/"seq_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("seq_gt", "seq")))
             rename_dict = dict(zip(test_df["input"], test_df["output"])) | dict(zip(seq_df["input"], seq_df["output"]))
 
             def get_filename(parent_dir: str, img_filename: str):
@@ -135,15 +164,41 @@ class FMoW:
             metadata_df = metadata_df[["image_path", "label_str", "img_height", "img_width", "bbox_tl_0", "bbox_tl_1", "bbox_br_0", "bbox_br_1"]+list(metadata[7:])]
             metadata_df.to_hdf(cls.local_staging / dataset / "metadata.h5", key = "dataset_df", mode = 'w', format = "fixed")
 
-        # TODO: add georegisteration step using geopandas, using df["raw_location"](wkt) as the geometry column, on crs = epsg:4326
-        # TODO: use the georegistered polygons to derive affine transformations for each image bounded by inner_bbox
-        return (
+        metadata_df = (
             metadata_df
             .assign(image_path = lambda df: df["image_path"].apply(lambda x: Path(x)))
             .assign(approximate_wavelengths = lambda df: df["approximate_wavelengths"].astype(object))
-            #.assign(abs_cal_factors = lambda df: df["abs_cal_factors"].astype(object))
             .assign(timestamp = lambda df: pd.to_datetime(df["timestamp"], format='mixed'))
         )
+        return gpd.GeoDataFrame(metadata_df, geometry = gpd.GeoSeries.from_wkt(metadata_df["raw_location"]), crs = cls.crs).drop(columns = "raw_location")
+    
+    @classmethod
+    def get_sentinel_metadata_df(cls):
+        metadata_dir = cls.local_staging / "sentinel"
+        try:
+            metadata_df = pd.read_hdf(metadata_dir / "metadata.h5", key = "metadata", mode = 'r')
+        except OSError:
+            def get_image_path(row: pd.Series, split: str):
+                return f"{split}/{row["category"]}/{row["category"]}_{row["location_id"]}/{row["category"]}_{row["location_id"]}_{row["image_id"]}.tif"
+            train_df = (
+                pd.read_csv(metadata_dir / "groundtruth" / "train.csv", index_col = 0)
+                .assign(image_path = lambda df: df.apply(lambda x: get_image_path(x, "train"), axis = 1))
+            )
+            val_df = (
+                pd.read_csv(metadata_dir / "groundtruth" / "val.csv", index_col = 0)
+                .assign(image_path = lambda df: df.apply(lambda x: get_image_path(x, "val"), axis = 1))
+            )
+            test_df = (
+                pd.read_csv(metadata_dir / "groundtruth" / "test.csv", index_col = 0)
+                .assign(image_path = lambda df: df.apply(lambda x: get_image_path(x, "test"), axis = 1))
+            )
+            metadata_df = pd.concat([train_df, val_df, test_df], axis = 0).drop(columns = ["category", "location_id", "image_id"])
+            metadata_df.to_hdf(metadata_dir / "metadata.h5", key = "metadata", mode = 'w')
+
+        metadata_df = gpd.GeoDataFrame(metadata_df, geometry=gpd.GeoSeries.from_wkt(metadata_df["polygon"]), crs = 4326)
+        metadata_df = metadata_df.drop(columns="polygon")
+        metadata_df = metadata_df[["image_path", "timestamp", "geometry"]]
+        return metadata_df 
 
     # Transformations
     @classmethod
@@ -162,10 +217,10 @@ class FMoW:
         else:
             raise ValueError(f"invalid :classification, expected either multiclass or multilabel, got {dataset}")
 
-        imagefolder = get_new_dir(local, "imagefolder")
+        imagefolder = fs.get_new_dir(local, "imagefolder")
 
         for subdir in df["image_path"].apply(lambda x: x.parent).unique():
-            get_new_dir(imagefolder, subdir)
+            fs.get_new_dir(imagefolder, subdir)
 
         for _, row in tqdm(df.iterrows(), total = len(df)):
             if row["img_height"] >= 2000 or row["img_width"] >= 2000:
@@ -183,7 +238,7 @@ class FMoW:
         df.to_hdf(imagefolder/"dataset.h5", key = "dataset_df", mode = "w")
 
     @classmethod
-    def transform_to_classification_hdf5(cls, dataset: Literal["rgb", "ms"] = "rgb", classification: Literal["multiclass", "multilabel"] = "multiclass"):
+    def transform_to_multiclass_classification_hdf5(cls, dataset: Literal["rgb", "ms"] = "rgb"):
         PIL.Image.MAX_IMAGE_PIXELS = 20000 * 20000 * 3
         if dataset == "rgb":
             local, staging = cls.local_rgb, cls.local_staging / "rgb"
@@ -192,14 +247,8 @@ class FMoW:
         else:
             raise ValueError(f"invalid :dataset, expected either rgb or ms, got {dataset}")
 
-        if classification == "multiclass":
-            df = cls.get_multiclass_classification_df_from_metadata()
-        elif classification == "multilabel":
-            df = cls.get_multilabel_classification_df_from_metadata()
-        else:
-            raise ValueError(f"invalid :classification, expected either multiclass or multilabel, got {dataset}")
-
-        hdf5 = get_new_dir(local, "hdf5") / f"fmow_{dataset}_{classification}.h5"
+        df = cls.get_multiclass_classification_df_from_metadata()
+        hdf5 = fs.get_new_dir(local, "hdf5") / f"fmow_{dataset}_multiclass.h5"
 
         with h5py.File(hdf5, mode = "w") as h5file:
             images = h5file.create_dataset("images", (len(df),), dtype = h5py.special_dtype(vlen=np.dtype("uint8")))
@@ -213,9 +262,47 @@ class FMoW:
         df["img_width"] = df.apply(lambda x: x["outer_bbox_br_1"] - x["outer_bbox_tl_1"], axis = 1)
         df = df[["image_path", "label_str", "img_width", "img_height", "inner_bbox_tl_0", "inner_bbox_tl_1", "inner_bbox_br_0", "inner_bbox_br_1"]]
         df.to_hdf(hdf5, key = "dataset_df", mode = "r+")
-
+    
     def transform_to_superresolution_imagefolder(cls):
-        pass
+        def get_category(image_path: Path):
+                image_path = str(image_path)
+                category = '/'.join(image_path.split('/')[:-1])
+                if category in rename_dict.keys():
+                    return rename_dict[category]
+                return category
+
+        test_df = pd.read_json(FMoW.local_rgb/"groundtruth"/"test_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("test_gt", "test")))
+        seq_df = pd.read_json(FMoW.local_rgb/"groundtruth"/"seq_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("seq_gt", "seq")))
+        rename_dict = dict(zip(test_df["output"], test_df["input"])) | dict(zip(seq_df["output"], seq_df["input"]))
+
+        sen_df = FMoW.get_sentinel_metadata_df()
+        sen_df["timestamp"] = pd.to_datetime(sen_df["timestamp"], format = "mixed")
+        sen_df["category"] = sen_df["image_path"].apply(lambda x: '/'.join(x.split('/')[:-1]))
+
+        rgb_df = (
+            FMoW.get_metadata_df()
+            .assign(split = lambda df: df["image_path"].apply(lambda x: str(x).split('/')[0]))
+            .assign(category = lambda df: df["image_path"].apply(lambda x: get_category(x)))
+        )
+        rgb_df = rgb_df[rgb_df["label_str"] != "false_detection"]
+        rgb_df = rgb_df[rgb_df["split"] != "seq"]
+
+        time_range_df = rgb_df.groupby("category").agg({"timestamp": ["min", "max"]}).reset_index(drop = False)
+        time_range_df.columns = ["category", "timestamp_min", "timestamp_max"]
+        sen_df = pd.merge(sen_df, time_range_df, how="left", on="category")
+        sen_df = sen_df[sen_df.apply(lambda x: x["timestamp"] > x["timestamp_min"] and x["timestamp"] < x["timestamp_max"], axis = 1)]
+
+        sen_categories = set(sen_df["category"].unique())
+
+        rgb_df = rgb_df[rgb_df["category"].apply(lambda x: x in sen_categories)]
+        rgb_df = rgb_df[["image_path", "timestamp", "geometry", "category"]].sort_values(by = ["category", "timestamp"], ascending=[True, True]).reset_index(drop = True)
+        sen_df = sen_df.drop(columns = ["timestamp_min", "timestamp_max"]).sort_values(by = ["category", "timestamp"], ascending=[True, True]).reset_index(drop = True)
+
+        geometry_df = pd.concat([rgb_df, sen_df], axis = 0).groupby("category").agg({"geometry": shapely.intersection_all}).reset_index(drop = False)
+        geometry_df.columns = ["category", "intersection"]
+
+        rgb_inter_df = pd.merge(rgb_df, geometry_df, "left", "category")
+        sen_inter_df = pd.merge(sen_df, geometry_df, "left", "category")
 
     def transform_to_localization_imagefolder(cls):
         pass
@@ -382,7 +469,58 @@ class FMoW:
     # def transform_to_mcc_hdf5(cls):
         # pass
     
+class FMoWHDF5Classification(Dataset):
+    name = "fmow_hdf5_classification"
+    class_names = FMoWETL.class_names
+    num_classes = FMoWETL.num_classes
+    means = FMoWETL.means
+    std_devs = FMoWETL.std_devs
 
-class FMoWImagefolderClassification(Dataset):
-    def __init__(self):
-        pass
+    df_schema = pa.DataFrameSchema({
+        "image_path": pa.Column(str, coerce = True),
+        "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
+    }, index = pa.Index(int, unique = True))
+
+    split_df_schema = pa.DataFrameSchema({
+        "image_path": pa.Column(str, coerce=True),
+        "df_idx": pa.Column(int),
+        "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, FMoWETL.num_classes))))
+    }, index = pa.Index(int, unique = True))
+
+    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None):
+        self._root = fs.get_valid_file_err(FMoWETL.local_rgb, "hdf5", "fmow_rgb_multiclass.h5")
+        self._split = self.get_valid_split_err(split)
+        self._config = config or FMoWETL.default_config
+        self._df = self._config.verify_and_get_df(schema = self.df_schema, fallback_df = pd.read_hdf(self._root, key = "dataset_df", mode = 'r'))
+        self._split_df = self._config.verify_and_get_split_df(df = self._df, schema = self.df_schema, split = self._split)
+        PIL.Image.MAX_IMAGE_PIXELS = 20000 * 20000 * 3
+    
+    def __len__(self) -> int:
+        return len(self._split_df)
+    
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
+        idx_row = self.split_df.iloc[idx]
+        with h5py.File(self.root, mode="r") as f:
+            image = iio.imread(BytesIO(f["images"][idx_row["df_idx"]]))
+        image = self._config.image_pre(image)
+        if self._split in ("train", "trainval", "all"):
+            image = self._config.train_aug(image)
+        elif self._split in ("val", "test"):
+            image = self._config.eval_aug(image)
+        return image, idx_row["label_idx"], idx_row["df_idx"]
+
+    @property
+    def root(self):
+        return self._root
+
+    @property
+    def split(self) -> Literal["train", "val", "trainval", "test", "all"]:
+        return self._split
+
+    @property
+    def df(self) -> pd.DataFrame:
+        return self._df
+
+    @property
+    def split_df(self) -> pd.DataFrame:
+        return self._split_df

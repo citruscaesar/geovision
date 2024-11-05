@@ -11,6 +11,4 @@ mkdir ~/dev ~/datasets ~/experiments && cd ~/dev
 git clone https://github.com/citruscaesar/geovision && cd geovision
 git --global user.name "Sambhav Chandra"
 git --global user.email "vader.sam10@gmail.com"
-pip install poetry && poetry shell
 poetry install
-pip install -e .

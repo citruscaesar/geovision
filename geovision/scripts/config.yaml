@@ -1,83 +1,95 @@
-name: testing_test 
+project_name: imagenette 
+run_name: logging_test 
 random_seed: 42
-dataset: imagenet_litdata_classification
+
+dataset_name: imagenette_hdf5_classification 
 dataset_params:
   df: null 
-  test_sample: 0.2 
-  val_sample: 0.05
-  tabular_sampling: imagefolder_notest 
-  # spatially tile along the x axis: tile_x = (size_x, stride_x)
-  tile_x: []
-  # spatially tile along the y axis: tile_y = (size_y, stride_y)
-  tile_y: []
-  spatial_sampling: null 
-  bands: [] 
-
+  tabular_sampler_name: imagefolder_notest 
+  tabular_sampler_params:
+    #test_frac: 0.2
+    val_frac: 0.25 
+  spatial_sampler_name: null
+  spatial_sampler_params:
+    tile:  []
+    stride:  []
+  spectral_sampler_name: null 
+  spectral_sampler_params: null
+  batch_transform_name: null 
+  batch_transform_params:
+    alpha: 1
+  transforms: |
+    from torch import float32
+    from torchvision.transforms import v2 as T
+    image_pre = T.Compose([
+      T.ToImage(),
+      T.ToDtype(float32, scale = True),
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+    train_aug = T.Compose([
+      T.Resize(512),
+      T.RandomCrop(256),
+      T.RandomHorizontalFlip(0.5),
+    ])
+    eval_aug = T.RandomCrop(256, pad_if_needed = True)
+    target_pre = None 
+  
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 128 
+  batch_size: 32 
   gradient_accumulation: 1
   num_workers: 4 
   persistent_workers: False
   pin_memory: False 
   prefetch_factor: 2
 
-metric: accuracy 
+metric_name: accuracy 
 metric_params: null
 
-nn: alexnet 
-nn_params:
-  num_layers: null 
-  weights: imagenet 
+model_name: resnet 
+model_params:
+  version: 18 
+  weights: random 
 
-criterion: cross_entropy
+criterion_name: cross_entropy
 criterion_params:
   reduction: mean
 
-optimizer: sgd 
+optimizer_name: sgd 
 optimizer_params:
-   lr: 5.0e-6
-   momentum: 0.9
-   weight_decay: 5.0e-4
+  lr: 1.0e-3 
+   #lr: 5.0e-6
+  momentum: 0.9
+  weight_decay: 5.0e-4
 
-scheduler: null
+scheduler_name: linear_lr 
 scheduler_params:
-  gamma: 0.1
-
-transforms_script: |
-  from torch import float32
-  from torchvision.transforms import v2 as T
-  image_pre = T.Compose([
-    T.ToImage(),
-    T.ToDtype(float32, scale = True),
-    T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-    T.Resize((224, 224))
-  ])
-  target_pre = T.Compose([
-    T.ToImage(),
-    T.ToDtype(float32, scale = False),
-  ])
-  train_aug = T.Compose([
-    T.Resize((224)),
-    T.RandomHorizontalFlip(0.5),
-    T.RandomCrop((224, 224))
-  ])
-  eval_aug = T.CenterCrop(224)
+  start_factor: 1.0 
+  end_factor: 0.001 
+  total_iters: 5
+# warmup_scheduler_name: linear_lr
+# warmup_scheduler_params:
+  # startup_factor: 0.25
+  # end_factor: 1.0
+  # total_iters: 10
+# warmup_steps: 100
+scheduler_config_params:
+  monitor: train_loss_epoch 
 
 log_params:
-  log_every_n_steps: 10 
-  log_every_n_epochs: 2
-  log_model_outputs: 0
-  log_models: -1 # enable checkpointing
   log_to_h5: True
-  log_to_wandb: True
+  log_to_wandb: False 
   log_to_csv: True
   wandb_params:
     tags: ["alexnet", "imagenette"]
     notes: "testing wandb logging" 
+  log_every_n_steps: 5 
+  log_every_n_epochs: 2
+  log_model_outputs: 0
+  log_models: -1 # enable checkpointing
 
 trainer_task: fit 
 trainer_params:
-  max_epochs: 10 
+  max_epochs: 22 
   num_sanity_val_steps: 0
-  enable_model_summary: True 
+  enable_model_summary: True

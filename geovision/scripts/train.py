@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from lightning import Trainer
 from torchvision.transforms import v2 as T  # type: ignore
 from geovision.io.local import get_new_dir, get_ckpt_path
-from geovision.config.config import ExperimentConfig
+from geovision.experiment.config import ExperimentConfig
 from geovision.data.module import ImageDatasetDataModule
 from models.module import ClassificationModule
 from geovision.logging.loggers import get_csv_logger, get_ckpt_logger, get_classification_logger
