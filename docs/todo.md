@@ -1,5 +1,6 @@
 ### geovision/
 - [] use pixi instead of conda+poetry, remove poetry dependencies and recreate environment
+- [] use importlib to get constructors for experiment config
 
 ### geovision.experiment/
 - [x] add lr_warmup to scheduler
@@ -16,30 +17,29 @@
     -> option to plot a metric and compare it across runs
 
 ### geovision.io/
-- [] SSHIO to sync the code, .env file and experiment logs b/w the local and the remote machine
-    -> scripts to upload all the code including the .env file and create the directory structure ready
-    -> fn to periodically download log files
-    -> Fabric or Paramiko
-- [] S3IO (calls s5cmd) to download datasets and download/upload ckpts and weights
+- [] Setup rsync + lsyncd for SSH file transfers and monitoring
+- [] Setup s5cmd to download datasets and sync (with inotify?) ckpts and weights
 
 ### geovision.models/ 
-- [] write loaded config to hparams.yaml at the beginning of each run (pl_module.save_hyperparameters())
+- [x] write loaded config to hparams.yaml at the beginning of each run (pl_module.save_hyperparameters())
 - [] list and add basic building blocks (e.g. vgg, residual, dense, mbconv)
     -> as generalized as possible
     -> add optional weight init, ideally external to the class itself
     -> expect or not expect to downsample/upsample the images
 - [] add commonly used architectures as generally as possible
     -> each layer should have a unique name and be accessible from the outside (important for attribution)
-- [] add constructors (fn not methods) to define a model using specific hyperparameters and load weights
-- [] add common weight init methodology (from torchvision.models/fastai/timm/huggingface/self-made etc.)
+- [x] add constructors (fn not methods) to define a model using specific hyperparameters and load weights
+- [x] add common weight init methodology (from torchvision.models/fastai/timm/huggingface/self-made etc.)
     -> port weights once and save for later use
 - [] use LightningModules to define common workflows, like Classification, GAN, VAE, MoCo etc. with training, evaluation and inference
 - [] add Potts and Normalized Cut Loss (for polygon regularization)
+- [] add Inplace Activated Batch Norm to reduce memory usage
 
 ### geovision.analysis/
-- [] attribution Methods like Feature Visualization, Guided Backprop, IG, GRAD-CAM, LIME, SHAP, etc.
-    -> (optionally) implement from scratch without using Captum 
-- [] script to compute and store image statistics right in the metadata dataframe files, aggregate to compute dataset statistics
+- [x] attribution Methods like Feature Visualization, Guided Backprop, IG, GRAD-CAM, LIME, SHAP, etc.
+    -> [] (optionally) implement from scratch without using Captum 
+- [] add color and class selectivity indices (read https://arxiv.org/pdf/1702.00382 and ConvNeXt v2)
+- [x] script to compute and store image statistics right in the metadata dataframe files, aggregate to compute dataset statistics
     -> load each image, calculate channel wise mean and variance and store in a dataframe -> concat with metadata to calculate aggregate stats dynamically for any split as properties
 - [] classical statistics based EDA for datasets to highlight geometry and spectral characteristics
 

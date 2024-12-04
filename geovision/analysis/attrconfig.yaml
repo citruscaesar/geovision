@@ -1,0 +1,53 @@
+project_name: imagenette
+run_name: logging_test 
+random_seed: 42
+
+dataset_name: imagenette_hdf5_classification
+dataset_params:
+  df: null 
+  tabular_sampler_name: imagefolder_notest 
+  tabular_sampler_params:
+    val_frac: 0.25 
+    split_on: label_str
+  transforms: |
+    from torch import float32
+    from torchvision.transforms import v2 as T
+    image_pre = T.Compose([
+      T.ToImage(),
+      T.Resize((512, 512)),
+      T.RandomCrop(256),
+      T.ToDtype(float32, scale = True),
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+    target_pre = None
+    train_aug = None
+    eval_aug = None
+    
+dataloader_params:
+  batch_size: 32 
+  num_workers: 1 
+  persistent_workers: False
+  pin_memory: True 
+  prefetch_factor: 4
+
+model_type: classification
+model_params: 
+  # a valid ckpt path means the litmodule state dict will be loaded from here, and :weights in the encoder/deocder params will be ignored
+  # however the ckpt is checked to contain these same encoder and decoders
+  ckpt_path: ~/experiments/imagenette/logging_test/ckpts/epoch=8_step=963.ckpt
+  encoder_name: resnet 
+  encoder_params:
+    version: 18 
+    weights_init: torchvision
+  decoder_name: linear
+  decoder_params:
+    in_features: 512 
+
+attribution: integrated_gradients 
+attribution_init_params:
+  multiply_by_inputs: True
+attribution_fn_params:
+  n_steps: 50 
+  internal_batch_size: 80 
+  method: "gausslegendre"
+  return_convergence_delta: True 

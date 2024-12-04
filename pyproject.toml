@@ -72,6 +72,6 @@ python_files = "*.py"
 addopts = "-s -v"
 
 [tool.ruff]
-line-length = 200 
+line-length = 150 
 indent-width = 4
 

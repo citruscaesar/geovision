@@ -6,6 +6,7 @@ import h5py
 import torch
 import torchmetrics
 import numpy as np
+import matplotlib.pyplot as plt
 from pathlib import Path
 from lightning import Callback, LightningModule, Trainer
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
@@ -13,7 +14,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 
 from geovision.data.interfaces import Dataset
 from geovision.experiment.config import ExperimentConfig
-from geovision.analysis.viz import get_confusion_matrix_plot
+from .utils import plot as cfm_plot
 
 import logging
 logger = logging.getLogger(__name__)
@@ -22,156 +23,76 @@ class HDF5ExperimentWriter:
     def __init__(self, experiments_dir: Path):
         self.logfile = experiments_dir / "experiment.h5"
 
-        with h5py.File(self.logfile, mode="a") as logfile:
+        with h5py.File(self.logfile, mode="a", libver="latest") as logfile:
             self.run_idxs = sorted(int(key.removeprefix("run=")) for key in logfile.keys())
             self.run_idx = 0 if len(self.run_idxs) == 0 else self.run_idxs[-1] + 1
-            logfile.create_group(f"run={self.run_idx}")
+            logfile.create_group(f"run={self.run_idx}", track_order=True)
 
-    def add_metadata(self, key: str, value: int = 0) -> None:
-        """add metadata used to interpret metric buffers. :step/epoch begin points to where the ckpt was loaded, :step/epoch interval is the logging interval between iterations. :steps_per_epochs"""
+    def add_metadata(self, key: str, value: int | list) -> None:
+        """add metadata used to interpret metric buffers. :step/epoch begin points to where the ckpt was loaded, :step/epoch interval is the logging 
+        interval between iterations. :steps_per_epochs"""
         with h5py.File(self.logfile, mode="r+") as logfile:
-            run_logs = logfile[f"run={self.run_idx}"]
-            if run_logs.get(key) is None:
-                run_logs.create_dataset(key, shape = 1, dtype = np.uint32, data = value)
-            else:
-                run_logs[key][:] = int(value)
+            logfile[f"run={self.run_idx}"].attrs.modify(key, value)
     
-    def add_list_of_strings(self, key: str, value: list[str]) -> None:
-        with h5py.File(self.logfile, mode="r+") as logfile:
-            logfile[f"run={self.run_idx}"].create_dataset(key, shape = len(value), dtype = h5py.string_dtype(), data = value)
-
-    # def add_ckpt_metadata(self, step_begin: int = 0, step_interval: int = 1, epoch_begin: int = 0, epoch_interval: int = 1) -> None:
-        # with h5py.File(self.logfile, mode="r+") as logfile:
-            # run_logs.create_dataset("step_begin", shape=1, dtype=np.uint32, data=step_begin)
-            # run_logs.create_dataset("epoch_begin", shape=1, dtype=np.uint32, data=epoch_begin)
-            # run_logs.create_dataset("step_interval", shape=1, dtype=np.uint32, data=step_interval)
-            # run_logs.create_dataset("epoch_interval", shape=1, dtype=np.uint32, data=epoch_interval)
-
-    def add_metric_buffers(self, metrics: list[str], split: Literal["train", "val", "test"], suffix: Literal["split", "epoch"], buffer_size: int) -> None:
+    def add_metric_buffers(self, metrics: list[str], shape: int | tuple, dtype):
         """add metric arrays as run=run_idx/split_metric_suffix"""
 
         with h5py.File(self.logfile, mode="r+") as logfile:
-            run_logs = logfile[f"run={self.run_idx}"]
-            if run_logs.get(f"{split}_{suffix}_end") is None:
-                run_logs.create_dataset(f"{split}_{suffix}_end", shape=1, dtype=np.uint32, data=0)
             for metric in metrics:
-                if run_logs.get(metric) is None:
-                    run_logs.create_dataset(metric, buffer_size, np.float32)
-                # if run_logs.get(f"{split}_{metric}_{suffix}") is None:
-                    # run_logs.create_dataset(f"{split}_{metric}_{suffix}", buffer_size, np.float32)
+                metric = f"run={self.run_idx}/{metric}"
+                if logfile.get(metric) is None:
+                    logfile.create_dataset(metric, shape=shape, dtype=dtype)
+                    logfile[metric].attrs.modify("idx", 0)
 
-    def add_confusion_matrix(self, num_classes: int, split: str):
-        """add confusion matrix arrays as run=run_idx/split_confusion_matrix_epoch"""
-
-        with h5py.File(self.logfile, mode="r+") as logfile:
-            run_logs = logfile[f"run={self.run_idx}"]
-            if run_logs.get(f"{split}_confusion_matrix_epoch") is None:
-                run_logs.create_dataset(f"{split}_confusion_matrix_epoch", shape=(1, num_classes, num_classes), dtype=np.uint32)
-
-    def add_model_outputs(self, num_samples: int, num_classes: int, is_top_k: bool, split: str):
-        """add arrays to store model outputs, beware of large storage footprints. set :is_top_k to True to store class labels alongside outputs"""
-
-        with h5py.File(self.logfile, mode="r+") as logfile:
-            run_logs = logfile[f"run={self.run_idx}"]
-            if run_logs.get(f"{split}_outputs_epoch") is None:
-                run_logs.create_dataset(f"{split}_outputs_epoch", shape=(1, num_samples, num_classes), dtype=np.float32)
-            if is_top_k and run_logs.get(f"{split}_classes_epoch") is None:
-                run_logs.create_dataset(f"{split}_classes_epoch", shape=(1, num_samples, num_classes), dtype=np.uint32)
-    
-    def add_monitor_metric(self, metric: str):
-        """assign a monitor metric from among added (scalar)metrics, used to evaluate the run progress. Full metric name including split and suffix must be provided"""
-
-        with h5py.File(self.logfile, mode = "r+") as logfile:
-            run_logs = logfile[f"run={self.run_idx}"]
-            if run_logs.get(metric) is not None:
-                if run_logs.get("monitored_metric") is not None:
-                    run_logs.create_dataset("monitored_metric", dtype=h5py.string_dtype(length = len(metric)), data = metric)
-            else:
-                ValueError(":monitored metric not one of tracked metric buffers, make sure it is added using add_metric_buffers before assigning it as a monitor metric") 
-
-    def resize(self, file_handle: h5py.File, name: str, idx: int, scalar: int = 2):
-        """internal method, exponentially resizes array at :scalar rate until idx fits inside it, usually only runs once"""
-
-        # print(f"rimentWriter: attempting to resize {name} @ [{idx}], buf_len = {len(file_handle[name])}")
-        while idx >= len(file_handle[name]):
-            ds, name_ = file_handle[name], f"{name}_temp"
-            # print(f"rimentWriter: resizing {name} from {ds.shape} to {ds_.shape}")
-            ds_ = file_handle.create_dataset(
-                name_, shape=(ds.shape[0] * scalar, *ds.shape[1:]), dtype=ds.dtype
-            )
-            ds_[: len(ds)] = ds[:]
-            del file_handle[name]
-            file_handle[name] = file_handle[name_]
-            del file_handle[name_]
-
-    def log_dict(self, metrics: dict[str, Any], split: Literal["train", "val", "test"], suffix: Literal["step", "epoch"]):
+    def log_dict(self, metrics: dict[str, Any]):
         """logs metrics dict to run=run_idx/split_metric_suffix and resizes the dataset array if needed"""
 
-        with h5py.File(self.logfile, mode="r+") as logfile:
-            insert_at = logfile[f"run={self.run_idx}/{split}_{suffix}_end"]
-            for k, v in metrics.items():
-                metric = f"run={self.run_idx}/{k}"
-                self.resize(logfile, metric, insert_at[0])
-                logfile[metric][insert_at[0]] = v
-            insert_at[0] += 1
-
-    def log_outputs(self, split: str, start: int, end: int, outputs: NDArray, classes: Optional[NDArray] = None):
-        """logs model outputs to run=run_idx/split_outputs_epoch, and optionally logs class idxs in case of top-k outputs"""
-
-        def update_model_outputs(file_handle: h5py.File, name: str, idx: int, buffer: NDArray):
-            self.resize(file_handle, name, idx)
-            file_handle[name][idx, start:end] = buffer
+        def resize_buffer(metric: str, idx: int):
+            metadata = {k:v for k, v in logfile[metric].attrs.items()}
+            while idx >= len(logfile[metric]):
+                logfile.create_dataset("temp", shape = (logfile[metric].shape[0]*2, *logfile[metric].shape[1:]), dtype = logfile[metric].dtype)
+                logfile["temp"][:len(logfile[metric])] = logfile[metric] # NOTE: if this reads the buffer into memory, this whole op is a waste of time
+                del logfile[metric]
+                logfile[metric] = logfile["temp"] 
+                del logfile["temp"]
+            for k,v in metadata.items():
+                logfile[metric].attrs.modify(k,v)
 
         with h5py.File(self.logfile, mode="r+") as logfile:
-            insert_at = logfile[f"run={self.run_idx}/{split}_epoch_end"]
-            update_model_outputs(logfile, f"run={self.run_idx}/{split}_outputs_epoch", insert_at[0], outputs)
-            if classes is not None:
-                update_model_outputs(logfile, f"run={self.run_idx}/{split}_classes_epoch", insert_at[0], classes)
-
+            logfile.swmr_mode = True
+            for metric, value in metrics.items():
+                metric = f"run={self.run_idx}/{metric}"
+                resize_buffer(metric, logfile[metric].attrs["idx"])
+                dataset = logfile[metric]
+                dataset[dataset.attrs["idx"]] = value
+                dataset.attrs.modify("idx", dataset.attrs["idx"]+1)
+                
     def trim_run(self):
         """remove buffer space upto {split}_step_end and {split}_epoch_end for current run to reduce storage footprint. Must be called to end a run"""
-
-        def trim_dataset(file_handle: h5py.File, name: str, trim_upto: int):
-            # logger.info(f"ExperimentIO: trimming {name} upto [{trim_upto}]")
-            ds, name_ = file_handle[name], f"{name}_temp"
-            file_handle.create_dataset(name_, data=ds[:trim_upto])
-            del file_handle[name]
-            file_handle[name] = file_handle[name_]
-            del file_handle[name_]
-
         with h5py.File(self.logfile, mode="r+") as logfile:
-            for split in ("train", "val", "test"):
-                step_end = logfile.get(f"run={self.run_idx}/{split}_step_end")
-                epoch_end = logfile.get(f"run={self.run_idx}/{split}_epoch_end")
-                if step_end is None or epoch_end is None:
-                    continue
-                for metric in [f"run={self.run_idx}/{m}" for m in logfile[f"run={self.run_idx}"].keys() if m.startswith(split)]:
-                    # print(f"trimming {metric}")
-                    if metric.endswith("_step"):
-                        trim_dataset(logfile, metric, trim_upto=step_end[0])
-                    elif metric.endswith("_epoch"):
-                        trim_dataset(logfile, metric, trim_upto=epoch_end[0])
-                del step_end
-                del epoch_end
+            for metric in (f"run={self.run_idx}/{m}" for m in logfile[f"run={self.run_idx}"].keys()):
+                logfile["temp"] = logfile[metric][:logfile[metric].attrs["idx"]]
+                del logfile[metric] 
+                logfile[metric] = logfile["temp"]
+                del logfile["temp"] 
 
 class ClassificationLogger(Callback):
     def __init__(self, config: ExperimentConfig):
         self.log_every_n_steps: int = config.log_params["log_every_n_steps"]
         self.log_every_n_epochs: int = config.log_params["log_every_n_epochs"]
-        self.log_model_outputs: int = config.log_params["log_model_outputs"]  # -1 means log all, 0 means none, int < num_classes means top_k
+        # self.log_model_outputs: int = config.log_params["log_model_outputs"]  # -1 means log all, 0 means none, int < num_classes means top_k
         self.log_to_h5: bool = config.log_params["log_to_h5"]
         self.log_to_wandb: bool = config.log_params["log_to_wandb"]
         self.log_to_csv: bool = config.log_params["log_to_csv"]
 
         if self.log_to_wandb:
-            self.wandb_init_params: dict = config.wandb_params
+            self.wandb_init_params: dict = config.wandb_init_params
 
         self.experiments_dir: Path = config.experiments_dir 
         self.batch_size: int = config.dataloader_config.batch_size // config.dataloader_config.gradient_accumulation
         self.learning_rate: float = config.optimizer_params["lr"]
         self.dataset: Dataset = config.dataset_constructor
         self.monitor_metric_name: str = config.metric_name
-        # print(self.dataset)
 
         self.metrics = torchmetrics.MetricCollection({
             "precision": config.get_metric("precision"),
@@ -210,8 +131,8 @@ class ClassificationLogger(Callback):
             self.h5_run.add_metadata("epoch_interval", self.log_every_n_epochs)
             self.h5_run.add_metadata("num_train_steps_per_epoch", self.train_steps_per_epoch)
             self.h5_run.add_metadata("num_val_steps_per_epoch", self.val_steps_per_epoch)
-            self.h5_run.add_list_of_strings("class_names", self.dataset.class_names)
-            self.h5_run.add_monitor_metric(f"val_{self.monitor_metric_name}_epoch")
+            self.h5_run.add_metadata("class_names", self.dataset.class_names)
+            self.h5_run.add_metadata("monitored_metric", self.monitor_metric_name)
         if self.log_to_wandb:
             self.wandb_run = wandb.init(**self.wandb_init_params)
 
@@ -229,9 +150,21 @@ class ClassificationLogger(Callback):
         self.train_metrics_epoch = self.metrics.clone(prefix = "train_", postfix = "_epoch")
         self.train_confusion_matrix = self.confusion_matrix.clone()
         # NOTE: in h5_run.add_metric_buffers, split and suffix are used to create the {split}_{suffix}_end integer, which marks the end of the {metric} buffer (which are dynamic arrays).
-        self.h5_run.add_metric_buffers(metrics = list(self.train_metrics_step.keys()) + ["train_loss_step", "train_lr_step"], split = "train", suffix = "step", buffer_size = self.train_steps_per_epoch)
-        self.h5_run.add_metric_buffers(metrics = list(self.train_metrics_epoch.keys()) + ["train_loss_epoch", "train_lr_epoch"], split = "train", suffix = "epoch", buffer_size = 1)
-        self.h5_run.add_confusion_matrix(num_classes = self.dataset.num_classes, split = "train")
+        self.h5_run.add_metric_buffers(
+            metrics = list(self.train_metrics_step.keys()) + ["train_loss_step", "train_lr_step"], 
+            shape = self.train_steps_per_epoch // self.log_every_n_steps, 
+            dtype = np.float32
+        )
+        self.h5_run.add_metric_buffers(
+            metrics = list(self.train_metrics_epoch.keys()) + ["train_loss_epoch", "train_lr_epoch"], 
+            shape = 1, 
+            dtype = np.float32
+        )
+        self.h5_run.add_metric_buffers(
+            metrics = ["train_confusion_matrix_epoch"],
+            shape = (1, self.dataset.num_classes, self.dataset.num_classes),
+            dtype = np.uint64
+        )
 
     def on_train_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.train_step = 0
@@ -239,6 +172,9 @@ class ClassificationLogger(Callback):
     def on_train_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int) -> None:
         if not trainer.validating and not trainer.sanity_checking:
             preds, labels, loss = outputs["preds"].detach().cpu(), batch[1].detach().cpu(), outputs["loss"].item()
+            # print("labels", type(labels), labels.dim(), labels.shape)
+            if labels.dim() > 1:
+                labels = labels.argmax(1)
             self.train_loss_buffer[self.train_step] = loss
             self.train_metrics_step.update(preds, labels)
             self.train_metrics_epoch.update(preds, labels)
@@ -250,17 +186,22 @@ class ClassificationLogger(Callback):
                 metrics_dict = self.train_metrics_step.compute()
                 metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"train_loss_step": np.mean(self.train_loss_buffer[begin:end])}
 
+                # NOTE: there should always be one scheduler, combining warmup and regular scheduler as sequential_lr with warmup steps
                 scheduler = pl_module.lr_schedulers()
                 if scheduler is not None:
                     if isinstance(scheduler, list):
                         scheduler = scheduler[-1]
-                    self.learning_rate = scheduler.get_last_lr()[-1]
+                    # NOTE: get_last_lr(): (...) -> [lr]
+                    self.learning_rate = scheduler.get_last_lr()[0]
+                else:
+                    # TODO: get lr from optmizers instead ? print(pl_module.optimizers())
+                    self.learning_rate = np.nan
 
                 # assert isinstance(self.learning_rate, float), f"logging error, expected :learning_rate to be of type float, got {type(self.learning_rate)}"
                 metrics_dict = metrics_dict | {"train_lr_step": self.learning_rate}
 
                 if self.log_to_h5:
-                    self.h5_run.log_dict(metrics_dict, "train", "step")
+                    self.h5_run.log_dict(metrics_dict)
                 if self.log_to_csv:
                     pl_module.log_dict(metrics_dict, on_step=True, on_epoch=False)
                 if self.log_to_wandb:
@@ -278,16 +219,17 @@ class ClassificationLogger(Callback):
             if scheduler is not None:
                 if isinstance(scheduler, list):
                     scheduler = scheduler[-1]
-                self.learning_rate = scheduler.get_last_lr()[-1]
+                self.learning_rate = scheduler.get_last_lr()[0]
+            else:
+                self.learning_rate = np.nan
 
-            # assert isinstance(self.learning_rate, float), f"logging error, expected :learning_rate to be of type float, got {type(self.learning_rate)}"
-            metrics_dict = metrics_dict | {"train_lr_epoch": self.learning_rate}
+            metrics_dict = metrics_dict | {"train_lr_step": self.learning_rate}
 
             confusion_matrix = self.train_confusion_matrix.compute().numpy()
+            if self.log_to_h5:
+                self.h5_run.log_dict(metrics_dict | {"train_confusion_matrix_epoch": confusion_matrix})
             if self.log_to_csv:
                 pl_module.log_dict(metrics_dict, on_step=False, on_epoch=True)
-            if self.log_to_h5:
-                self.h5_run.log_dict(metrics_dict | {"train_confusion_matrix_epoch": confusion_matrix}, "train", "epoch")
             if self.log_to_wandb:
                 self.wandb_run.log(metrics_dict | {"train_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), "trainer_step": trainer.global_step, "trainer_epoch": trainer.current_epoch})
             self.train_metrics_epoch.reset()
@@ -301,16 +243,21 @@ class ClassificationLogger(Callback):
         self.val_metrics_epoch = self.metrics.clone(prefix = "val_", postfix = "_epoch")
         self.val_confusion_matrix = self.confusion_matrix.clone()
         # NOTE: in h5_run.add_metric_buffers, split and suffix are used to create the {split}_{suffix}_end integer, which marks the end of the {metric} buffer (which are dynamic arrays).
-        self.h5_run.add_metric_buffers(metrics = list(self.val_metrics_step.keys()) + ["val_loss_step"], split = "val", suffix = "step", buffer_size = self.val_steps_per_epoch)
-        self.h5_run.add_metric_buffers(metrics = list(self.val_metrics_epoch.keys()) + ["val_loss_epoch"], split = "val", suffix = "epoch", buffer_size = 1)
-        self.h5_run.add_confusion_matrix(num_classes = self.dataset.num_classes, split = "val")
-
-        # log at every :log_every_n_step^th step or at the last step
-        if self.log_to_h5 and self.log_model_outputs != 0:
-            if self.log_model_outputs == -1 or self.log_model_outputs >= self.dataset.num_classes:
-                self.h5_run.add_model_outputs(self.val_samples_per_epoch, self.dataset.num_classes, False, "val")
-            else:
-                self.h5_run.add_model_outputs(self.val_samples_per_epoch, self.log_model_outputs, True, "val")
+        self.h5_run.add_metric_buffers(
+            metrics = list(self.val_metrics_step.keys()) + ["val_loss_step"], 
+            shape = self.val_steps_per_epoch // self.log_every_n_steps,
+            dtype = np.float32
+        )
+        self.h5_run.add_metric_buffers(
+            metrics = list(self.val_metrics_epoch.keys()) + ["val_loss_epoch"],
+            shape = 1,
+            dtype = np.float32
+        )
+        self.h5_run.add_metric_buffers(
+            metrics = ["val_confusion_matrix_epoch"],
+            shape = (1, self.dataset.num_classes, self.dataset.num_classes),
+            dtype = np.int64
+        )
 
     def on_validation_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.val_step = 0
@@ -318,6 +265,8 @@ class ClassificationLogger(Callback):
     def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
         if not trainer.sanity_checking:
             preds, labels, loss = outputs["preds"].detach().cpu(), batch[1].detach().cpu(), outputs["loss"].item(),
+            if labels.dim() > 1:
+                labels = labels.argmax(1)
             self.val_loss_buffer[self.val_step] = loss
             self.val_metrics_step.update(preds, labels)
             self.val_metrics_epoch.update(preds, labels)
@@ -328,21 +277,13 @@ class ClassificationLogger(Callback):
                 metrics_dict = self.val_metrics_step.compute()
                 metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"val_loss_step": np.mean(self.val_loss_buffer[begin:end])}
                 if self.log_to_h5:
-                    self.h5_run.log_dict(metrics_dict, "val", "step")
+                    self.h5_run.log_dict(metrics_dict)
                 if self.log_to_csv:
                     pl_module.log_dict(metrics_dict, on_step=True, on_epoch=False)
                 if self.log_to_wandb:
                     self.wandb_run.log(metrics_dict | {"trainer_step": trainer.global_step + self.val_step})
                 self.val_metrics_step.reset()
             self.val_step += 1
-
-            if self.log_to_h5 and self.log_model_outputs != 0:
-                start, end = self.val_step * len(preds), min((self.val_step + 1) * len(preds), self.val_samples_per_epoch)
-                if self.log_top_k_preds == -1 or self.log_top_k_preds >= self.dataset.num_classes:
-                    self.h5_run.log_outputs("val", start, end, preds.numpy())
-                else:
-                    topk = torch.topk(preds, self.log_top_k_preds)
-                    self.h5_run.log_outputs("val", start, end, topk.values.numpy(), topk.indices.numpy())
 
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         if not trainer.sanity_checking and self.val_step == self.val_steps_per_epoch:
@@ -352,22 +293,29 @@ class ClassificationLogger(Callback):
             if self.log_to_csv:
                 pl_module.log_dict(metrics_dict, on_step=False, on_epoch=True)
             if self.log_to_h5:
-                self.h5_run.log_dict(metrics_dict | {"val_confusion_matrix_epoch": confusion_matrix}, "val", "epoch")
+                self.h5_run.log_dict(metrics_dict | {"val_confusion_matrix_epoch": confusion_matrix})
             if self.log_to_wandb:
-                self.wandb_run.log(metrics_dict | {"val_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), "trainer_step": trainer.global_step, "trainer_epoch": trainer.current_epoch})
+                self.wandb_run.log(metrics_dict | {
+                    "val_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), 
+                    "trainer_step": trainer.global_step, 
+                    "trainer_epoch": trainer.current_epoch
+                })
             self.val_metrics_epoch.reset()
             self.val_confusion_matrix.reset()
             self.val_epoch += 1
 
     def teardown(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
         if self.log_to_h5:
-            # print("called teardown on h5")
             self.h5_run.trim_run()
         if self.log_to_wandb:
             self.wandb_run.finish()
 
+def get_confusion_matrix_plot(mat: NDArray, class_names: tuple[str, ...]):
+    fig, ax = plt.subplots(1, 1, figsize = (10,8), layout = "constrained")
+    cfm_plot(ax, mat, class_names)
+    return fig
+
 def get_csv_logger(config):
-    logger.info(f"logging metrics.csv to {config.experiments_dir}")
     return CSVLogger(
         save_dir=config.experiments_dir.parent.parent,
         name=config.experiments_dir.parent.name,
@@ -375,20 +323,11 @@ def get_csv_logger(config):
         flush_logs_every_n_steps=100,
     )
 
-def get_wandb_logger(config):
-    logger.info(f"logging wandb to {config.experiments_dir}")
-    return WandbLogger(
-        project=config.experiments_dir.parent.name,
-        name=config.experiments_dir.name,
-        save_dir=config.experiments_dir,
-        log_model="all",
-        save_code=False,
-    )
+def get_wandb_logger(config: ExperimentConfig):
+    return WandbLogger(**config.wandb_logger_params)
 
 def get_ckpt_logger(config):
-    logger.info(f"logging ckpts to {config.experiments_dir}")
-
-    # min_metrics = "loss"
+    # min_metrics = ("loss",)
     return ModelCheckpoint(
         dirpath=config.experiments_dir / "ckpts",
         filename="{epoch}_{step}",

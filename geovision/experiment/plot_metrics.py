@@ -10,9 +10,7 @@ import matplotlib.pyplot as plt
 
 from pathlib import Path
 from geovision.io.local import FileSystemIO as fs
-from matplotlib.axes import Axes
-from matplotlib.cm import tab20b, tab20c, Blues
-from matplotlib.table import Table
+from geovision.experiment.utils import plot as cfm_plot
 
 # plot_metrics.py -> experiment_dir/metrics/...
 # 1. Confusion Matrix w/ classwise precision, recall, f1, iou (for each epoch): run={run_idx}_epoch={epoch}_confusion_matrix.png
@@ -24,23 +22,6 @@ from matplotlib.table import Table
 # 2. Display window with a confusion matrices and radio buttons to choose which one to plot (how to save confm which allows concurrent read/write -> a dir with each in a different file) 
 
 def get_runs(experiment_logs: Path) -> dict[int, tuple[bool, list[str], float]]:
-    def is_valid_run(logs) -> bool:
-        # metrics should be a set of scalar metrics only, remove confusion_matrix if found
-        metrics = get_tracked_metrics(logs)
-        if "confusion_matrix" in metrics:
-            metrics.remove("confusion_matrix")
-        
-        # a run is invalid if the logging was terminated unexpectedly -> buffers have extra space -> {split}_{suffix}_end != len(metric_buffer) - 1 
-        for split, suffix in ((x,y) for x in ("train", "val", "test") for y in ("step", "epoch")):
-            # ideally, last_idx should not exist as it's deleted by trim_run, but if it's found, check the validity condition
-            if (last_idx := logs.get(f"{split}_{suffix}_end")) is not None:
-                # if a metric buffer is found, check if it's length matches the last index 
-                for metric in metrics:
-                    if (metric_buffer := logs.get(f"{split}_{metric}_{suffix}")) is not None:
-                        if last_idx[0] != len(metric_buffer):    
-                            return False
-        return True
-    
     def get_tracked_metrics(logs) -> list:
         metrics = set()
         for dataset_name in logs:
@@ -49,11 +30,22 @@ def get_runs(experiment_logs: Path) -> dict[int, tuple[bool, list[str], float]]:
                 metrics.add(parts[1] if len(parts) == 3 else '_'.join(parts[1:-1]))
         return list(metrics)
 
+    def is_valid_run(run_logs) -> bool:
+        # a run is invalid if the logging was terminated unexpectedly -> buffers have extra space -> metric_ds.attrs["idx"] is defined -> idx != len(metric_buffer) - 1 
+        for metric in run_logs:
+            if "confusion_matrix" in metric: 
+                continue
+            last_idx = run_logs[metric].attrs.get("idx")
+            if last_idx is not None and last_idx != len(run_logs[metric]):
+                return False
+        return True
+
     # TODO: fix logger not logging monitor metric for some reason
-    def get_monitored_score(logs) -> float:
-        if (monitored_metric := logs.get("monitored_metric")) is not None:
-            if (monitored_metric_buffer := logs.get(monitored_metric[0])) is not None:
-                return monitored_metric_buffer[-1]
+    def get_monitored_score(run_logs) -> float:
+        monitored_metric = run_logs.attrs.get("monitored_metric")
+        if monitored_metric is not None:
+            metrics = sorted(get_defined_metrics(monitored_metric, run_logs), reverse = True)
+            return run_logs[metrics[-1]][-1]
         return np.nan
 
     runs = {"run_idx": list(), "is_valid": list(), "tracked_metrics": list(), "monitored_score": list()} 
@@ -67,122 +59,43 @@ def get_runs(experiment_logs: Path) -> dict[int, tuple[bool, list[str], float]]:
     return runs
 
 def plot_confusion_matrix(logs: Path, run_idx: int, save_to: Path):
-    def get_classification_metrics_dict(conf_mat: NDArray, class_names: Optional[tuple[str]] = None) -> dict[str, list]:
-        num_classes = conf_mat.shape[0]
-        num_samples = conf_mat.sum()
-        if class_names is None:
-            class_names = tuple([f"class_{i:02}" for i in range(num_classes)])
-        assert len(class_names) == num_classes, f"shape mismatch, expected an array of len = {num_classes}, got len = {len(class_names)}"
-        
-        metrics = {k:list() for k in ("precision", "recall", "f1", "iou")}
-        metrics["class_names"] = class_names
-        metrics["accuracy"] = conf_mat.trace() / num_samples
-        metrics["support"] = conf_mat.sum(axis = 0).tolist()
-        for c in range(num_classes):
-            tp, p, p_hat = conf_mat[c, c], conf_mat[c, :].sum(), conf_mat[:, c].sum()
-            metrics["precision"].append((tp / p_hat) if p_hat > 0 else 0)
-            metrics["recall"].append((tp / p) if p > 0 else 0)
-            metrics["iou"].append(tp / (p+p_hat-tp) if (p+p_hat-tp) > 0 else 0)
-            metrics["f1"].append( (2*tp) / (p+p_hat) if (p+p_hat) > 0 else 0)
-
-        sup = metrics["support"] / num_samples 
-        metrics["weighted"] = [np.dot(metrics[m], sup) for m in ("precision", "recall", "f1", "iou")]
-        return metrics
-
-    def get_classification_metrics_df(metrics_dict: dict[str, list]):
-        num_samples = sum(metrics_dict["support"])
-        acc = metrics_dict["accuracy"]
-
-        df = pd.DataFrame({k:metrics_dict[k] for k in ("class_names", "precision", "recall", "f1", "iou", "support")})
-        df.loc[len(df.index)] = ["macro", df["precision"].mean(), df["recall"].mean(), df["f1"].mean(), df["iou"].mean(), num_samples]
-        df.loc[len(df.index)] = ["weighted", *metrics_dict["weighted"], num_samples]
-        df.loc[len(df.index)] = ["micro", acc, acc, acc, acc, num_samples]
-        df = df.set_index("class_names")
-        return df
-
-    def plot(ax: Axes, mat: NDArray, class_names: Optional[tuple] = None, title: Optional[tuple] = None):
-        metrics_df = get_classification_metrics_df(get_classification_metrics_dict(mat, class_names))
-
-        ax.imshow(mat, cmap = Blues)
-        ax.set_xlabel("Predicted Class", fontsize = 10)
-        ax.set_xticks(list(range(mat.shape[0])))
-        ax.xaxis.set_label_position("top")
-
-        ax.set_ylabel("True Class", fontsize = 10)
-        ax.set_yticks(list(range(mat.shape[0])))
-        ax.yaxis.set_label_position("left")
-
-        for r in range(mat.shape[0]):
-            for c in range(mat.shape[0]):
-                ax.text(y = r, x = c, s = f"{int(mat[r, c]):2d}", ha = "center", va = "center", fontsize=10)
-
-        header_table = Table(ax, loc = "top right")
-        for c_idx, c_name in enumerate(("CLS", "P", "R", "F1", "IoU", "sup")):
-            w = 1/mat.shape[0]
-            header_table.add_cell(row=0, col=c_idx, width=3*w if c_name == "CLS" else w, height=1/mat.shape[0], text=c_name, loc = "center")
-        ax.add_table(header_table)
-
-        metric_table = Table(ax, loc = "right")
-        for r_idx, (name, row) in enumerate(metrics_df.iloc[:-3].iterrows()):
-            name = str(name).removeprefix("b'").removesuffix("'")
-            metric_table.add_cell(row=r_idx, col=0, width=3*w, height=1/mat.shape[0], text=str(name), loc="center")
-            for c_idx, metric in enumerate(row): 
-                if c_idx == 4:
-                    metric_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/mat.shape[0], text=f"{int(metric)}", loc="center")
-                else:
-                    metric_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/mat.shape[0], text=f"{metric:.2f}", loc="center", facecolor = Blues(metric))
-        ax.add_table(metric_table)
-
-        addl_table = Table(ax, loc = "bottom right")
-        for r_idx, (name, row) in enumerate(metrics_df.iloc[-3:].iterrows()):
-            addl_table.add_cell(row=r_idx, col=0, width=3*w, height=1/(2*mat.shape[0]), text=name, loc="center")
-            for c_idx, metric in enumerate(row): 
-                if c_idx == 4:
-                    addl_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/(2*mat.shape[0]), text=f"{int(metric)}", loc="center")
-                else: 
-                    addl_table.add_cell(row=r_idx, col=c_idx+1, width=w, height=1/(2*mat.shape[0]), text=f"{metric:.2f}", loc="center", facecolor = Blues(metric))
-        ax.add_table(addl_table)
-
-        if title is not None:
-            ax.set_title(title, fontsize = 10)
-
     with h5py.File(logs, mode = 'r') as logfile:
         run_logs = logfile[f"run={run_idx}"]
         for split in ("train", "val", "test"):
             matrices = run_logs.get(f"{split}_confusion_matrix_epoch")
             if matrices is not None:
                 matrices = matrices[:]
-                begin, steps_per_epoch  = run_logs["epoch_begin"][0], run_logs[f"num_{split}_steps_per_epoch"][0]
+                begin, steps_per_epoch  = run_logs.attrs["epoch_begin"], run_logs.attrs[f"num_{split}_steps_per_epoch"]
                 epochs = np.arange(start = begin + 1, stop = begin + len(matrices) + 1, step = 1)
                 for matrix, epoch in zip(matrices, epochs):
                     plot_name = f"run={run_idx}_epoch={epoch}_step={epoch*steps_per_epoch}_confusion_matrix"
                     fig, ax = plt.subplots(1, 1, figsize = (10, 8), layout = "constrained")
-                    plot(ax, matrix, class_names=run_logs["class_names"][:], title = plot_name)
+                    cfm_plot(ax, matrix, class_names=run_logs.attrs["class_names"], title = plot_name)
                     fig.savefig(save_to/f"{plot_name}.png")
 
-def get_defined_metrics(metric: str, logs):
+def get_defined_metrics(metric: str, run_logs):
     metrics = set()
     for split in ("train", "val", "test"):
         for suffix in ("step", "epoch"):
             name = f"{split}_{metric}_{suffix}"
-            if logs.get(name) is not None:
+            if run_logs.get(name) is not None:
                 metrics.add(name)
     return metrics
 
 def get_train_metric_steps(run_logs, suffix: str, length: int) -> NDArray:
     if suffix == "step":
-        begin, interval = run_logs["step_begin"][0], run_logs["step_interval"][0]
+        begin, interval = run_logs.attrs["step_begin"], run_logs.attrs["step_interval"]
         return np.arange(start = begin + interval, stop = begin + length*interval + 1, step = interval)
     else:
         # interval here is pointless, as epoch logs are logged at every interval
-        begin, steps_per_epoch = run_logs["epoch_begin"][0], run_logs["num_train_steps_per_epoch"][0]
+        begin, steps_per_epoch = run_logs.attrs["epoch_begin"], run_logs.attrs["num_train_steps_per_epoch"]
         return np.arange(start = begin+1, stop = begin + length+1, step = 1) * steps_per_epoch
 
 def get_eval_metric_steps(prefix: str, run_logs, suffix: str, length: int):
     if suffix == "step":
-        epoch_begin = run_logs["epoch_begin"][0]
-        step_interval, epoch_interval = run_logs["step_interval"][0], run_logs["epoch_interval"][0]
-        train_steps_per_epoch, eval_steps_per_epoch = run_logs["num_train_steps_per_epoch"][0], run_logs[f"num_{prefix}_steps_per_epoch"][0]
+        epoch_begin = run_logs.attrs["epoch_begin"]
+        step_interval, epoch_interval = run_logs.attrs["step_interval"], run_logs.attrs["epoch_interval"]
+        train_steps_per_epoch, eval_steps_per_epoch = run_logs.attrs["num_train_steps_per_epoch"], run_logs.attrs[f"num_{prefix}_steps_per_epoch"]
         window_len = eval_steps_per_epoch // step_interval
         num_windows = length // window_len
         assert length % window_len == 0, f"val_buffer_len problem {length, window_len}"
@@ -192,7 +105,7 @@ def get_eval_metric_steps(prefix: str, run_logs, suffix: str, length: int):
             steps.append(np.arange(start = begin + 1, stop = begin + window_len*step_interval + 1, step = step_interval))
         return np.stack(steps, axis = 0).flatten()
     else: 
-        begin, epoch_interval, steps_per_epoch = run_logs["epoch_begin"][0], run_logs["epoch_interval"][0], run_logs["num_train_steps_per_epoch"][0]
+        begin, epoch_interval, steps_per_epoch = run_logs.attrs["epoch_begin"], run_logs.attrs["epoch_interval"], run_logs.attrs["num_train_steps_per_epoch"]
         return np.arange(start = begin+1, stop = begin + length*epoch_interval+1, step = epoch_interval) * steps_per_epoch
 
 def get_line_style(split:str, suffix:str):

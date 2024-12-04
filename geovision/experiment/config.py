@@ -1,12 +1,16 @@
-from typing import Callable, Optional
+from typing import Optional
+from collections.abc import Callable
 
 import yaml
 import torch
 import logging
+import lightning
 import torchmetrics
+import pandas as pd
 from pathlib import Path
 
 from geovision.data.interfaces import DatasetConfig, DataLoaderConfig
+from geovision.models.interfaces import ModelConfig
 from geovision.io.local import FileSystemIO as fs
 
 logger = logging.getLogger(__name__)
@@ -15,18 +19,18 @@ class ExperimentConfig:
     def __init__(
         self,
         project_name: str,
-        trainer_task: str,
-        random_seed: str,
-        dataset_name: str,
-        dataset_params: dict,
-        dataloader_params: dict,
-        model_name: str,
-        model_params: dict,
-        log_params: dict,
-        trainer_params: dict,
-        metric_name: str,
-        metric_params: Optional[dict] = None,
         run_name: Optional[str | int] = None,
+        random_seed: Optional[int] = None,
+        trainer_task: Optional[str] = None,
+        trainer_params: Optional[dict] = None,
+        log_params: Optional[dict] = None,
+        dataset_name: Optional[str] = None,
+        dataset_params: Optional[dict] = None,
+        dataloader_params: Optional[dict] = None,
+        model_type: Optional[str] = None,
+        model_params: Optional[dict] = None,
+        metric_name: Optional[str] = None,
+        metric_params: Optional[dict] = None,
         criterion_name: Optional[str] = None,
         criterion_params: Optional[dict] = None,
         optimizer_name: Optional[str] = None,
@@ -39,140 +43,162 @@ class ExperimentConfig:
         warmup_steps: Optional[int] = None,
         **kwargs,
     ):
-        assert project_name is not None, "config error (missing value), :project_name cannot be empty"
         assert isinstance(project_name, str), f"config error (invalid type), expected :project_name to be str, got {type(project_name)}"
-        self.project_name = str(project_name)
+        self.project_name = project_name
 
         if run_name is None or run_name == "":
             from names_generator import generate_name
-
             self.run_name = generate_name()
-            warning_str = f"config warning (missing value), using generated :run_name '{self.run_name}'"
-            print(warning_str)
-            logger.info(warning_str)
         else:
-            assert isinstance(run_name, str) or isinstance(run_name, int), f"config error (invalid type), expected :run_name to be str or int, got {type(run_name)}"
+            assert isinstance(run_name, str) or isinstance(run_name, int), \
+                f"config error (invalid type), expected :run_name to be str or int, got {type(run_name)}"
             self.run_name = str(run_name)
 
-        assert trainer_task in ("fit", "validate", "test"), f"config error (invalid value), expected :trainer_task to be one of fit, validate, test or predict, got {trainer_task}"
-        assert isinstance(trainer_task, str), f"config error (invalid type), expected :trainer_task to be str, got {type(trainer_task)}"
+        if random_seed is not None:
+            assert isinstance(random_seed, int), f"config error (invalid type), expected :random_seed to be int, got {type(random_seed)}"
+        self.random_seed = random_seed or 42
+
+        if trainer_task is not None:
+            assert trainer_task in ("fit", "validate", "test"), \
+                f"config error (invalid value), expected :trainer_task to be one of fit, validate, test or predict, got {trainer_task}"
         self.trainer_task = trainer_task
 
-        assert isinstance(random_seed, int), f"config error (invalid type), expected :random_seed to be int, got {type(random_seed)}"
-        self.random_seed = random_seed
+        if trainer_params is not None:
+            assert isinstance(trainer_params, dict), f"config error (invalid type), expected :trainer_params to be dict, got {type(trainer_params)}"
+        self.trainer_params = trainer_params
+        
+        if log_params is not None:
+            assert isinstance(log_params, dict), f"config error (invalid type), expected :log_params to be dict, got {type(log_params)}"
 
-        assert isinstance(dataset_name, str), f"config error (invalid type), expected :dataset_name to be str, got {type(dataset_name)}"
-        self.dataset_constructor = self._get_dataset_constructor(dataset_name)  # NOTE: also checks if dataset_name is valid; call this before setting self.dataset_name
+            log_every_n_steps = log_params.get("log_every_n_steps")
+            assert log_every_n_steps is not None, "config error (missing value), expected :log_params to contain log_every_n_steps(int)"
+            assert isinstance(log_every_n_steps, int), \
+                f"config error (invalid value), expected :log_params[log_every_n_steps] to be an int, got {type(log_every_n_steps)}"
+            self.trainer_params["log_every_n_steps"] = log_params["log_every_n_steps"]
+
+            log_every_n_epochs = log_params.get("log_every_n_epochs")
+            assert log_every_n_epochs is not None, "config error (missing value), expected :log_params to contain log_every_n_epochs(int)"
+            assert isinstance(log_every_n_epochs, int), \
+                f"config error (invalid value), expected :log_params[log_every_n_epochs] to be an int, got {type(log_every_n_epochs)}"
+            self.trainer_params["check_val_every_n_epoch"] = log_params["log_every_n_epochs"]
+
+            assert log_params.get("log_to_h5") is not None, "config error (missing value), expected :log_params to contain log_to_h5(bool)"
+            assert log_params.get("log_to_csv") is not None, "config error (missing value), expected :log_params to contain log_to_csv(bool)"
+            assert log_params.get("log_to_wandb") is not None, "config error (missing value), expected :log_params to contain log_to_wandb(bool)"
+            assert log_params.get("log_models") is not None, "config error (missing value), expected :log_params to contain log_models(bool)"
+            self.trainer_params["enable_checkpointing"] = log_params["log_models"]
+
+            wandb_init_params = log_params.get("wandb_init_params")
+            if wandb_init_params is not None:
+                assert isinstance(wandb_init_params, dict) is not None, \
+                    f"config error (invalid type), expected :wandb_init_params to be dict, got {type(wandb_init_params)}"
+        self.log_params = log_params
+
+        # log_model_outputs = log_params.get("log_model_outputs" True)
+        # assert log_model_outputs is not None, "config error (missing value), expected :log_params to contain log_model_outputs(int)"
+        # assert isinstance(log_model_outputs, int), \
+            # f"config error (invalid value), expected :log_params[log_model_outputs] to be an int, got {type(log_model_outputs)}"
+        # assert log_model_outputs >= -1, \
+        #   "config error (invalid value), expected :log_params[log_model_outputs] to be 0 for no logging, -1 to log all outputs or any k < num_dataset_classes to log top_k"
+        # assert log_model_outputs <= self.dataset_constructor.num_classes
+
+        if dataset_name is not None:
+            assert isinstance(dataset_params, dict), f"config error (invalid type), expected :dataset_params to be dict, got {type(dataset_params)}"
+            self.dataset_constructor = self._get_dataset_constructor(dataset_name)
+            self.dataset_config = DatasetConfig(random_seed=self.random_seed, **dataset_params)
+        else:
+            self.dataset_constructor = None
+            self.dataset_config = None
         self.dataset_name = dataset_name
 
-        assert isinstance(dataset_params, dict), f"config error (invalid type), expected :dataset_params to be dict, got {type(dataset_params)}"
-        self.dataset_config = DatasetConfig(random_seed=self.random_seed, **dataset_params)
-
-        assert isinstance(dataloader_params, dict), f"config error (invalid type), expected :dataloader_params to be dict, got {type(dataloader_params)}"
-
-        dataloader_params["batch_transform_name"] = dataset_params.get("batch_transform_name", None)
-        if dataloader_params["batch_transform_name"] is not None:
-            if dataset_params["batch_transform_params"] is not None:
-                assert isinstance(
-                    dataset_params["batch_transform_params"], dict
-                ), f"config error (invalid type), expected :batch_transform-params to be dict, got {type(dataset_params["batch_transform_params"])}"
-            dataloader_params["batch_transform_params"] = (dataset_params["batch_transform_params"] or dict()) | {"num_classes": self.dataset_constructor.num_classes}
-        self.dataloader_config = DataLoaderConfig(**dataloader_params)
-
-        assert isinstance(model_name, str), f"config error (invalid type), expected :model_name to be str, got {type(model_name)}"
-        assert isinstance(model_params, dict), f"config error (invalid type), expected :model_params to be dict, got {type(model_params)}"
-        self.model_name = model_name
-        self.model_params = model_params | {"num_classes": self.dataset_constructor.num_classes}
-        self.model_constructor = self._get_model_constructor(model_name)  # also checks if model_name is valid
-
-        if criterion_name is not None:
-            assert isinstance(criterion_name, str), f"config error (invalid type), expected :criterion_name to be str, got {type(criterion_name)}"
-            self.criterion_constructor = self._get_criterion_constructor(criterion_name)  # also checks if criterion_name is valid
-            if criterion_params is None:
-                self.criterion_params = dict()
-            else:
-                assert isinstance(criterion_params, dict), f"config error (invalid type), expected :criterion_params to be dict, got {type(criterion_params)}"
-                self.criterion_params = criterion_params
-        self.criterion_name = criterion_name
+        if dataloader_params is not None:
+            assert isinstance(dataloader_params, dict), \
+                f"config error (invalid type), expected :dataloader_params to be dict, got {type(dataloader_params)}"
+            if self.dataset_name is not None: 
+                batch_transform_name = dataset_params.get("batch_transform_name")
+                if batch_transform_name is not None:
+                    dataloader_params["batch_transform_name"] = batch_transform_name 
+                    dataloader_params["batch_transform_params"] = dataset_params.get("batch_transform_params", dict())
+                    dataloader_params["batch_transform_params"]["num_classes"] = self.dataset_constructor.num_classes
+            self.dataloader_config = DataLoaderConfig(**dataloader_params)
+            if isinstance(self.trainer_params, dict):
+                self.trainer_params["accumulate_grad_batches"] = self.dataloader_config.gradient_accumulation
+        else:
+            self.dataloader_config = None
 
         if metric_name is not None:
-            assert isinstance(metric_name, str), f"config error (invalid type), expected :metric_name to be str, got {type(metric_name)}"
-            self.metric_constructor = self._get_metric_constructor(metric_name)  # also checks if metric_name is valid
-            if metric_params is None:
-                self.metric_params = dict()
-            else:
-                assert isinstance(metric_params, dict), f"config error (invalid type), expected :metric_params to be dict, got {type(metric_params)}"
-                self.metric_params = metric_params
-            self.metric_params.update({"task": self._get_metric_task(self.dataset_name), "num_classes": self.dataset_constructor.num_classes})
+            self.metric_constructor = self._get_metric_constructor(metric_name)
+            self.metric_params = metric_params or dict()
+            if self.metric_params.get("task") is None and self.dataset_constructor is not None:
+                self.metric_params["task"] = self._get_metric_task(self.dataset_constructor)
+            if self.metric_params.get("num_classes") is None and self.dataset_constructor is not None:
+                self.metric_params["num_classes"] = self.dataset_constructor.num_classes
+        else:
+            self.metric_constructor = None
+            self.metric_params = None
         self.metric_name = metric_name
 
+        if model_type is not None:
+            assert model_type in ("classification", "gan"), \
+                f"config error (invalid value), expected :model_type to be one of ('classification', 'gan') got {model_type}"
+            assert isinstance(model_params, dict), f"config error (invalid type), expected :model_params to be dict, got {type(model_params)}"
+            decoder_params = model_params.get("decoder_params") 
+            if decoder_params is not None:
+                assert isinstance(decoder_params, dict), \
+                    f"config error (invalid type), expected :decoder_params to be dict, got {type(decoder_params)}"
+                decoder_params["out_features"] = self.dataset_constructor.num_classes
+            self.model_config = ModelConfig(**model_params)
+        else:
+            self.model_config = None
+        self.model_type = model_type
+
+        if criterion_name is not None:
+            self.criterion_constructor = self._get_criterion_constructor(criterion_name)
+            self.criterion_params = criterion_params or dict()
+            assert isinstance(self.criterion_params, dict), \
+                f"config error (invalid type), expected :criterion_params to be dict, got {type(self.criterion_params)}"
+        else:
+            self.criterion_constructor = None
+            self.criterion_params = None
+        self.criterion_name = criterion_name
+
         if optimizer_name is not None:
-            assert isinstance(optimizer_name, str), f"config error (invalid type), expected :optimizer_name to be str, got {type(optimizer_name)}"
-            self.optimizer_constructor = self._get_optimizer_constructor(optimizer_name)  # also checks if optimizer_name is valid
-            if optimizer_params is None:
-                self.optimizer_params = dict()
-            else:
-                assert isinstance(optimizer_params, dict), f"config error (invalid type), expected :optimizer_params to be dict, got {type(optimizer_params)}"
-                self.optimizer_params = optimizer_params
+            self.optimizer_constructor = self._get_optimizer_constructor(optimizer_name)
+            self.optimizer_params = optimizer_params or dict()
+            assert isinstance(self.optimizer_params, dict), \
+                f"config error (invalid type), expected :optimizer_params to be dict, got {type(self.optimizer_params)}"
+        else:
+            self.optimizer_constructor = None
+            self.optimizer_params = None
         self.optimizer_name = optimizer_name
 
         if scheduler_name is not None:
-            assert isinstance(scheduler_name, str), f"config error (invalid type), expected :scheduler_name to be str, got {type(scheduler_name)}"
-            self.scheduler_constructor = self._get_scheduler_constructor(scheduler_name)  # also checks if scheduler_name is valid
+            self.scheduler_constructor = self._get_scheduler_constructor(scheduler_name)
+            self.scheduler_params = scheduler_params or dict()
+            assert isinstance(self.scheduler_params, dict), \
+                f"config error (invalid type), expected :scheduler_params to be dict, got {type(self.scheduler_params)}"
+        else:
+            self.scheduler_constructor = None
+            self.scheduler_params = None
         self.scheduler_name = scheduler_name
 
-        if scheduler_params is None:
-            self.scheduler_params = dict()
-        else:
-            assert isinstance(scheduler_params, dict), f"config error (invalid type), expected :scheduler_params to be dict, got {type(scheduler_params)}"
-            self.scheduler_params = scheduler_params
-
         if warmup_scheduler_name is not None:
-            assert isinstance(warmup_scheduler_name, str), f"config error (invalid type), expected :warmup_scheduler_name to be str, got {type(warmup_scheduler_name)}"
-            assert isinstance(warmup_steps, int), f"config error (invalid type), expected :warmup_steps to be int, got {type(warmup_steps)}"
-            self.warmup_scheduler_constructor = self._get_scheduler_constructor(warmup_scheduler_name)  # also checks if scheduler_name is valid
+            self.warmup_scheduler_constructor = self._get_scheduler_constructor(warmup_scheduler_name)
+            self.warmup_scheduler_params = warmup_scheduler_params or dict()
+            assert isinstance(self.warmup_scheduler_params, dict), \
+                f"config error (invalid type), expected :warmup_scheduler_params to be dict, got {type(self.warmup_scheduler_params)}"
+            if scheduler_name is not None:
+                assert isinstance(warmup_steps, int), f"config error (invalid type), expected :warmup_steps to be int, got {type(warmup_steps)}"
+            self.warmup_steps = warmup_steps 
+        else:
+            self.warmup_scheduler_constructor = None
+            self.warmup_scheduler_params = None
+            self.warmup_steps = None
         self.warmup_scheduler_name = warmup_scheduler_name
-        self.warmup_steps = warmup_steps
 
-        if warmup_scheduler_params is None:
-            self.warmup_scheduler_params = dict()
-        else:
-            assert isinstance(warmup_scheduler_params, dict), f"config error (invalid type), expected :warmup_scheduler_params to be dict, got {type(warmup_scheduler_params)}"
-            self.warmup_scheduler_params = warmup_scheduler_params
-
-        if scheduler_config_params is None:
-            self.scheduler_config_params = dict()
-        else:
-            assert isinstance(scheduler_config_params, dict), f"config error (invalid type), expected :scheduler_config_params to be dict, got {type(scheduler_config_params)}"
-            self.scheduler_config_params = scheduler_config_params
-
-        assert isinstance(log_params, dict), f"config error (invalid type), expected :log_params to be dict, got {type(log_params)}"
-        log_every_n_steps = log_params.get("log_every_n_steps")
-        assert log_every_n_steps is not None, "config error (missing value), expected :log_params to contain log_every_n_steps(int)"
-        assert isinstance(log_every_n_steps, int), f"config error (invalid value), expected :log_params[log_every_n_steps] to be an int, got {type(log_every_n_steps)}"
-
-        log_every_n_epochs = log_params.get("log_every_n_epochs")
-        assert log_every_n_epochs is not None, "config error (missing value), expected :log_params to contain log_every_n_epochs(int)"
-        assert isinstance(log_every_n_epochs, int), f"config error (invalid value), expected :log_params[log_every_n_epochs] to be an int, got {type(log_every_n_epochs)}"
-
-        log_model_outputs = log_params.get("log_model_outputs")
-        assert log_model_outputs is not None, "config error (missing value), expected :log_params to contain log_model_outputs(int)"
-        assert isinstance(log_model_outputs, int), f"config error (invalid value), expected :log_params[log_model_outputs] to be an int, got {type(log_model_outputs)}"
-        assert (
-            log_model_outputs >= -1
-        ), "config error (invalid value), expected :log_params[log_model_outputs] to be 0 for no logging, -1 to log all outputs or any k < num_dataset_classes to log top_k"
-        assert log_model_outputs <= self.dataset_constructor.num_classes
-
-        assert log_params.get("log_to_h5") is not None, "config error (missing value), expected :log_params to contain log_to_h5(bool)"
-        assert log_params.get("log_to_wandb") is not None, "config error (missing value), expected :log_params to contain log_to_wandb(bool)"
-        assert log_params.get("log_to_csv") is not None, "config error (missing value), expected :log_params to contain log_to_csv(bool)"
-        self.log_params = log_params
-
-        assert isinstance(trainer_params, dict), f"config error (invalid type), expected :trainer_params to be dict, got {type(trainer_params)}"
-        trainer_params["log_every_n_steps"] = self.log_params["log_every_n_steps"]
-        trainer_params["check_val_every_n_epoch"] = self.log_params["log_every_n_epochs"]
-        trainer_params["accumulate_grad_batches"] = self.grad_accum
-        self.trainer_params = trainer_params
+        self.scheduler_config_params = scheduler_config_params or dict()
+        assert isinstance(self.scheduler_config_params, dict), \
+            f"config error (invalid type), expected :scheduler_config_params to be dict, got {type(scheduler_config_params)}"
 
     @classmethod
     def from_yaml(cls, config_path: str):
@@ -187,15 +213,17 @@ class ExperimentConfig:
         return cls(**config_dict)
 
     def __repr__(self) -> str:
+        # TODO: print this as a pretty table :: self -> pd.DataFrame -> tabulate -> str
         out = f"==Experiment Config==\nProject Name: {self.project_name}\nRun Name: {self.run_name}\nRandom Seed: {self.random_seed}\n\n"
-        out += f"==Dataset Config==\nDataset: {self.dataset_name} [{self.dataset_constructor}]\n{self.dataset_params}Dataloader Params: {self.dataloader_config}\n\n"
-        out += "==Model Config==\n\n"
+        out += f"==Logging Config==\n{"\n".join(str(self.log_params).removeprefix("{").removesuffix("}").split(", "))}\n\n"
+        out += f"==Dataset Config==\nDataset: {self.dataset_name} [{self.dataset_constructor}]\n{self.dataset_config}Dataloader Params: {self.dataloader_config}\n\n"
+        out += f"==Model Config==\nModel Type: {self.model_type}\nEncoder:{self.model_config.encoder_name} {self.model_config.encoder_params}\nDecoder:{self.model_config.decoder_name} {self.model_config.decoder_params}\n\n"
         out += f"==Task Config==\nTrainer Task: {self.trainer_task}\nTrainer Params: {self.trainer_params}\n\n"
         out += f"==Evaluation Config==\nCriterion: {self.criterion_name} [{self.criterion_constructor}]\nCriterion Params: {self.criterion_params}\n"
         out += f"Metric: {self.metric_name} [{self.metric_constructor}]\nMetric Params: {self.metric_params}\n\n"
         out += f"==Training Config==\nOptimizer: {self.optimizer_name} [{self.optimizer_constructor}]\nOptimizer Params: {self.optimizer_params}\n"
-        out += f"LR Scheduler: {self.scheduler_name} [{self.scheduler_constructor}]\nLR Scheduler Params: {self.scheduler_params}\nLR Scheduler Config: {self.scheduler_config_params}\n\n"
-        out += f"==Logging Config==\n{"\n".join(str(self.log_params).removeprefix("{").removesuffix("}").split(", "))}\n"
+        out += f"LR Scheduler: {self.scheduler_name} [{self.scheduler_constructor}]\nLR Scheduler Params: {self.scheduler_params}\nLR Scheduler Config: {self.scheduler_config_params}\n"
+        out += f"Warmup LR Scheduler: {self.warmup_scheduler_name} [{self.warmup_scheduler_constructor}]\nWarmup LR Scheduler Params: {self.warmup_scheduler_params}\n\n"
         return out
 
     @property
@@ -204,42 +232,32 @@ class ExperimentConfig:
         return fs.get_new_dir(Path.home(), "experiments", self.project_name, self.run_name)
 
     @property
-    def last_ckpt_path(self, epoch: int = -1, step: int = -1) -> Path:
-        def display_ckpts_list(ckpts) -> None:
-            names = [ckpt.name for ckpt in ckpts]
-            names[-1] = f"*{names[-1]}"
-            display(f"found ckpts: {names}") # noqa # type: ignore
+    def ckpt_path(self) -> Optional[Path]:
+        if self.model_config.ckpt_path is not None:
+            return self.model_config.ckpt_path
 
-        if epoch < -1:
-            raise ValueError(f"epoch must be >= -1, got{epoch}")
-        if step < -1:
-            raise ValueError(f"step must be >= -1, got {step}")
+        def _version(path: Path) -> int:
+            parts = path.stem.split('v')
+            if len(parts) > 1:
+                return int(parts[-1])
+            return 1
+        
+        ckpts_df = pd.DataFrame({"ckpt_path": self.experiments_dir.rglob("*.ckpt")})
+        ckpts_df["epoch"] = ckpts_df["ckpt_path"].apply(lambda x: int(x.stem.split('_')[0].removeprefix("epoch=")))
+        ckpts_df["step"] = ckpts_df["ckpt_path"].apply(lambda x: int(x.stem.split('_')[1].removeprefix("step=").split('v')[0]))
+        ckpts_df["version"] = ckpts_df["ckpt_path"].apply(_version)
+        ckpts_df = ckpts_df.sort_values(["epoch", "step", "version"]).reset_index(drop = True)
+        print(ckpts_df)
 
-        # dosen't sort properly -> gather epoch_idx and step_idx separately and then sort 
-        # try not to use pandas
-        ckpts = {int(x.stem.split('=')[-1]):x for x in self.experiments_dir.rglob("*.ckpt")}
-        ckpts = [ckpts[x] for x in sorted(ckpts)] 
-        if len(ckpts) == 0:
-            print("no ckpt found in experiments, returning None")
-        elif epoch == -1 and step == -1:
-            display_ckpts_list(ckpts)
-            return ckpts[-1] 
-        elif epoch != -1 and step == -1:
-            ckpts = [ckpt for ckpt in ckpts if f"epoch={epoch}" in ckpt.name]
-            display_ckpts_list(ckpts)
-            return ckpts[-1]
-        else:
-            ckpts = [ckpt for ckpt in ckpts if f"epoch={epoch}_step={step}" in ckpt.name]
-            if len(ckpts) == 0:
-                print("found no matching ckpt, returning None")
-                return None
-            else:
-                display_ckpts_list(ckpts)
-                return ckpts[-1]
+        if len(ckpts_df) == 0:
+            return None
+        return ckpts_df.iloc[-1]["ckpt_path"]
 
     @property
-    def wandb_params(self) -> dict:
-        return {"project": self.project_name, "name": self.run_name, "dir": self.experiments_dir, "config": self.__dict__, "resume": "never"} | self.log_params.get("wandb_params", dict())
+    def wandb_init_params(self) -> dict:
+        params = {"project": self.project_name, "name": self.run_name, "dir": self.experiments_dir, "resume": "never"} 
+        #params.update(self.log_params.get("wandb_params", dict()))
+        return params | self.log_params.get("wandb_init_params", dict())
 
     @property
     def grad_accum(self) -> int:
@@ -247,20 +265,29 @@ class ExperimentConfig:
 
     def get_metric(self, metric_name: Optional[str] = None, addl_metric_params: Optional[dict] = None):
         metric_name: str = metric_name or self.metric_name
-        metric_params: dict = self.metric_params 
-        if addl_metric_params is not None:
-            metric_params = metric_params | addl_metric_params
-        return self._get_metric_constructor(metric_name)(**metric_params)
+        metric_params: dict = self.metric_params or dict()
+        return self._get_metric_constructor(metric_name)(**(metric_params | (addl_metric_params or dict())))
 
-    def _get_metric_task(self, dataset_name: str) -> str:
-        task_str = dataset_name.split("_")[-1]
+    def _get_metric_task(self, dataset_constructor: Callable) -> str:
+        task_str = dataset_constructor.name.split("_")[-1]
         match task_str:
             case "classification":
-                return "multiclass" if self.dataset_constructor.num_classes > 2 else "binary"
+                return "multiclass" if dataset_constructor.num_classes > 2 else "binary"
             case "multilabelclassification":
                 return "multilabel"
             case _:
                 raise AssertionError(f"config error (invalid value), :dataset_name has an invalid task str, got {task_str}")
+
+    def _get_model_constructor(self, model_type) -> lightning.LightningModule:
+        match model_type:
+            case "classification":
+                from geovision.models.interfaces import ClassificationModule 
+                return ClassificationModule
+            case "gan":
+                from geovision.models.interfaces import GANModule
+                return GANModule
+            case _:
+                raise AssertionError(f"config error (not implmented), got {model_type}")
 
     def _get_model_constructor(self, model_name) -> torch.nn.Module:
         match model_name:
@@ -431,5 +458,6 @@ class ExperimentConfig:
                 raise AssertionError(f"config error (not implemented), got {scheduler_name}")
 
 if __name__ == "__main__":
-    config = ExperimentConfig.from_config("geovision/scripts/new_config.yaml")
-    print(config)
+    config = ExperimentConfig.from_yaml(Path.home() / "dev" / "geovision" / "geovision" / "scripts" / "config.yaml")
+    print(config.ckpt_path)
+    #print(config)

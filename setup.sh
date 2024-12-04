@@ -1,14 +1,12 @@
-apt update && apt upgrade
-apt install ranger htop fish
-conda init fish && fish
-set -Ux AWS_ENDPOINT_URL https://sin1.contabostorage.com
-set -Ux S3_ENDPOINT_URL https://sin1.contabostorage.com
+apt update && apt upgrade -y
+apt install btop ranger fish -y
+git config --global user.name "Sambhav Chandra"
+git config --global user.email "vader.sam10@gmail.com"
+# git clone https://github.com/citruscaesar/geovision && cd geovision
+# conda init bash && conda init fish
+# bash
+# conda activate base 
+# conda install -y python=3.12
 
-conda activate base && conda install -y python=3.12
-pip install poetry
-
-mkdir ~/dev ~/datasets ~/experiments && cd ~/dev
-git clone https://github.com/citruscaesar/geovision && cd geovision
-git --global user.name "Sambhav Chandra"
-git --global user.email "vader.sam10@gmail.com"
-poetry install
+# fish
+# fish_vi_key_bindings

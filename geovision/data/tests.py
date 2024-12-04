@@ -25,11 +25,7 @@ def test_dataset(dataset: Dataset, batch_size: int, limit_samples: int, save_plo
 
     image_shape = image.shape
     if isinstance(label, int) or isinstance(label, np.integer):
-        label_shape = torch.Size(
-            [
-                1,
-            ]
-        )
+        label_shape = torch.Size([1])
     elif isinstance(label, torch.Tensor) or isinstance(label, np.ndarray):
         label_shape = label.shape
     else:
@@ -108,7 +104,7 @@ def test_dataloader(dataset: Dataset, dataloder_params: dict, limit_batches: int
 if __name__ == "__main__":
     cmd_parser = argparse.ArgumentParser(prog="Data Tester", description="Tests the :dataset class and reports any errors encoutered while loading", epilog="\n")
     cmd_parser.add_argument("--config", default="config.yaml", help="path to config file", dest="config_path")
-    cmd_parser.add_argument("--split", choices=["train", "val", "trainval", "test", "all"], default="all", help="which dataset split to test", dest="split")
+    cmd_parser.add_argument("--split", choices=["train", "val", "test", "trainvaltest", "all"], default="all", help="which dataset split to test", dest="split")
     cmd_parser.add_argument("--limit", default=0, help="test first n batches / samples", dest="limit")
     cmd_parser.add_argument("--dataloader", action="store_true", help="test dataloader (batches) instead of dataset (samples)", dest="test_dataloader")
     cmd_parser.add_argument("--save_plots", action="store_true", help="save plots of data batches", dest="save_plots")

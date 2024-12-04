@@ -1,19 +1,17 @@
 # The Flow of Data
 
 ## Extraction, Transformation and Storage: geovision.data 
-Datasets are downloaded either from their hosted sources from the web or from the personal cloud hosted storage server, which is Contabo currently. This idea commonly called data warehousing, where
-it is cleaned, homgenized and stored in a common data format ready for analysis. The advantages of using the latter is that:
-
-1. the dataset is already prepared before storage, so the transformation step can be entirely skipped if the task-specific dataset is stored or involve relatively few steps if a more general 
-   form of the dataset is stored to avoid redundant copies of the same data.
+Datasets are downloaded either from their hosted sources from the web or from the personal cloud hosted storage server, which is Contabo currently. This idea commonly called data warehousing, where it is cleaned, homgenized and stored in a common data format ready for analysis. The advantages of using the latter is that:
+1. the dataset is already prepared before storage, so the transformation step can be entirely skipped if the task-specific dataset is stored or involve relatively few steps if a more general form of the dataset is stored to avoid redundant copies of the same data.
 2. the etl pipeline from the orginal data source might be slow with inconsistent network speeds, slow transformation steps, etc.
 3. although uncommon, sometimes the web hosted sources today might not be online in the future, thus it's prudent to store a copy of the data as a backup.
 
 The extracted/raw data is placed in a temporary subdirectory for cleaning. At this point, an exploratory analysis is performed to look for any patterns, inconsistencies and redundancies in the 
-organization, size, formating, metadata, etc. to help envision the transformation steps required to convert the data into a consistent schema. Further, visual inspection of the  data, i.e. staring at
-it, helps not only to write the automated scripts in later steps, but also to familiarize with the data itself. 
+organization, size, formating, metadata, etc. to help envision the transformation steps required to convert the data into a consistent schema. Any problems related to file type, encoding, compression
+inconsistencies should be fixed at this stage, by either casting the files into one storage representation, or adding the embedding information to interpret the data with the metadata files.
+Further, visual inspection of the data, i.e. staring at it, helps not only to write the automated scripts in later steps, but also to familiarize with the data itself. 
 
-The data cleaning steps are organized in a sequential and modular way, such that at the end of each step, an metadata.h5 contains all the metadata about the dataset, and is used 
+The data cleaning steps are organized in a sequential and modular way, within the {dataset}ETL class, such that at the end of each step, an metadata.h5 contains all the metadata about the dataset, and is used 
 by the later steps to load and transform either just the metadata itself, or both the dataset and the metadata if needed. Some datasets often come with large amounts of associated metadata, which
 are stored in tables in a relational manner, with a integer index acting as the primary/foreign key assigned to each unique data sample. Even when the datasets don't have these metadata, they are 
 either downloaded using other sources, or computed as part of EDA or in later descriptive analysis steps, and are stored alongside the indexed images to be joined as needed. 
@@ -24,7 +22,7 @@ either downloaded using other sources, or computed as part of EDA or in later de
   * temporal: (table): [:time_of_capture, :time_of_overpass, ...]
   * additional: (table): [:radiometric_information, :sensor_calibration_information, :data_format_and_decoding_information, ...]
 
-The cleaning steps should result in a task specific dataset with a clearly defined task, such as multiclass classification, multilabel classification, binary segmentation, etc., which differs from
+The cleaning steps should result in a dataset with a clearly defined task with one kind of label, such as multiclass classification, binary segmentation, etc., which differs from
 more generalized versions of the dataset, such as a localization dataset with multiple bboxes per image which can always be used as a multilabel classification dataset, stored with both kinds of
 labels simultaneously. It should also be stored in one of several storage formats (e.g. Imagefolder, Memory Mapped Numpy Arrays, HDF5, Zarr, LMDB, etc.) with the metadata attatched as tables.
 It is clear then that the extraction and transformation steps are (mostly) unique to each dataset and it's intended purpose, thus it's not wise to try to generalize them.
@@ -73,17 +71,21 @@ where it needs to be improved.
 
 ### Data Analysis Methods and Expected Insights
 Often little to do with label information, more about the images themselves, should be able to work with any index_df(raw/cleaned/subsampled).
-#### Dimension Analysis
-### ...
+
+#### Spatial Information 
 Dimension information such as image dimensions -> used for cropping, padding and aspect ratio problems -> also to calculate file size in memory
-File size on disk information for flat (compressed) files (.jpg, .png, .tiff)
+Spatial information like crs and gsd, autocorrelation, semivariogram, endmember extraction, anomaly detection, etc.
+
+#### Spectral Information
 Color information like channel wise min, max, mean, median, variance, skewness and kurtosis -> sampling distribution of sample statistics -> color normalization, transformation, augmentation strategies
   ... channel correlation, pearson's, spearman's, mutual information, partial correlation,
   ... histogram based statistics, entropy, energy, homogeniety
   ... other methods like color space transformation, spatial color analysis, principal components, etc.
-Spatial information like crs and gsd, autocorrelation, semivariogram, endmember extraction, anomaly detection, etc.
 
-#### Model Evaluation and Understanding 
+#### Temporal Analysis
+Time Series analysis
+
+### Model Evaluation and Understanding 
 Model Performance Evaluation
 script to pass a dataset through the model and store its outputs in a file
   -> can be used to find for which examples does the model perform well/poor and analyze why 
@@ -108,7 +110,7 @@ Pruining
 Quantization
 
 ## Deployment
-Export to ONNX, torch.compile
+Export to ONNX, torchserve, huggingface(?)
 
 
 

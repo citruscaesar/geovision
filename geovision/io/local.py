@@ -47,4 +47,4 @@ class FileSystemIO:
     
     @staticmethod
     def get_absolute_path(*args: tuple) -> Path:
-        return Path(*args).resolve().expanduser()
+        return Path(*args).expanduser().resolve().absolute()

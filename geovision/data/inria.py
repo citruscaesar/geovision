@@ -1,155 +1,141 @@
-from typing import Literal
+from typing import Literal, Optional
 from numpy.typing import NDArray
 
+import os
 import h5py
 import py7zr
 import shutil
 import zipfile
+import subprocess
 import numpy as np
 import pandas as pd
 import multivolumefile
 import rasterio as rio
 import imageio.v3 as iio
+import torchvision.transforms.v2 as T
 
-from pathlib import Path
-from .dataset import Dataset
-from geovision.io.local import get_new_dir, get_valid_dir_err
-from torchvision.datasets.utils import download_url
 from tqdm import tqdm
+from pathlib import Path
+from geovision.data.interfaces import Dataset
+from geovision.io.local import FileSystemIO as fs 
+from torchvision.datasets.utils import download_url
+
+# NOTE:
+# - Extract (from wherever) -> Imagefolder
+# - Download (from s3 storage) -> HDF5
+# - Load (from imagefolder or HDF5) -> DataFrame
+# - Transform (from Imagefolder) -> HDF5
+#   -> Calls Load (from imagefolder) -> Index DataFrame
 
 class Inria:
     local = Path.home() / "datasets" / "inria"
-    archive = local / "archives" / "NEW2-AerialImageDataset.zip"
-    urls = (
-        "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.001",
-        "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.002",
-        "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.003",
-        "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.004",
-        "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.005"
-    )
     class_names = ("background", "building_rooftop") 
-    means = ()
-    std_devs = ()
     identity_matrix = np.eye(2, dtype = np.float32)
 
-    # Extraction
     @classmethod
-    def download_from_source(cls):
-        archives_dir = get_new_dir(cls.local / "archives") 
-        for url in tqdm(cls.urls):
-            download_url(url, archives_dir)
-        with multivolumefile.open(archives_dir / "aerialimagelabeling.7z", mode = "rb") as multi_archive:
-            with py7zr.SevenZipFile(multi_archive, mode = "r") as archive:
-                archive.extractall(archives_dir)
-        for url in cls.urls:
-            (archives_dir / url.split('/')[-1]).unlink(missing_ok=True)
+    def extract(cls, src: Literal["inria.fr", "huggingface", "kaggle"]):
+        """downloads from :src to :local/imagefolder"""
+        valid_sources = ("inria.fr", "huggingface", "kaggle") 
+        assert src in valid_sources, f"value error, expected :src to be one of {valid_sources}, got {src}"
 
-    @classmethod
-    def download_from_storage(cls, storage_type: Literal["hdf5", "archive"] = "hdf5", subset: Literal["supervised", "unsupervised", "both"] = "supervised"):
-        """call s5cmd sync with index-url and save to appropriate dir"""
-        pass
-
-    # Transformation
-    @classmethod
-    def transform_to_imagefolder(cls):
-        imagefolder_path = get_new_dir(cls.local / "imagefolder")
-        with zipfile.ZipFile(cls.archive, mode = "r") as archive:
-            archive.extractall(imagefolder_path)
-        shutil.move(imagefolder_path / "AerialImageDataset" / "test" / "images", imagefolder_path / "unsup")
-        shutil.move(imagefolder_path / "AerialImageDataset" / "train" / "images", imagefolder_path / "images")
-        shutil.move(imagefolder_path / "AerialImageDataset" / "train" / "gt", imagefolder_path / "masks")
-        shutil.rmtree(imagefolder_path / "AerialImageDataset")
-        cls.get_dataset_df_from_imagefolder()
-
-    @classmethod
-    def transform_to_hdf5_from_archive(cls, subset: Literal["supervised", "unsupervised", "both"] = "supervised"):
-        hdf5_path = get_new_dir(cls.local / "hdf5")
-        df = cls.get_dataset_df_from_archive()
-
-        if subset in ("supervised", "both"):
-            supervised_df = df[df["supervised"]].drop(columns = "supervised").reset_index(drop = True)
-            with h5py.File(hdf5_path / "inria_supervised.h5", "w") as h5file:
-                images = h5file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
-                masks = h5file.create_dataset("masks", 180, dtype = h5py.special_dtype(vlen=np.int64))
-                for idx, row in tqdm(supervised_df.iterrows(), total = 180, desc = "writing supervised samples"):
-                    images[idx] = iio.imread(f"{cls.archive}/{row["image_path"]}", extension=".tif")
-                    masks[idx] = cls.encode_binary_mask(iio.imread(f"{cls.archive}/{row["mask_path"]}", extension=".tif"))
-            supervised_df.to_hdf(hdf5_path / "inria_supervised.h5", "dataset_df", "r+")
-            
-        if subset in ("unsupervised", "both"):
-            unsupervised_df = df[~df["supervised"]].drop(columns = ["mask_path", "supervised"]).reset_index(drop = True)
-            with h5py.File(hdf5_path / "inria_unsupervised.h5", "w") as h5file:
-                images = h5file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
-                for idx, row in tqdm(unsupervised_df.iterrows(), total = 180, desc = "writing unsupervised samples"):
-                    images[idx] = iio.imread(f"{cls.archive}/{row["image_path"]}", extension=".tif")
-            unsupervised_df.to_hdf(hdf5_path / "inria_unsupervised.h5", "dataset_df", "r+")
-
-    @classmethod
-    def transform_to_hdf5_from_imagefolder(cls, subset: Literal["supervised", "unsupervised", "both"] = "supervised"):
-        imagefolder_path = get_valid_dir_err(cls.local/"imagefolder")
-        hdf5_path = get_new_dir(cls.local / "hdf5")
-        df = cls.get_dataset_df_from_imagefolder()
-
-        if subset in ("supervised", "both"):
-            supervised_df = df[df["supervised"]].drop(columns = "supervised")
-            with h5py.File(hdf5_path / "inria_supervised.h5", "w") as h5file:
-                images = h5file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
-                masks = h5file.create_dataset("masks", 180, dtype = h5py.special_dtype(vlen=np.int64))
-                for idx, row in tqdm(supervised_df.iterrows(), total = 180):
-                    images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
-                    masks[idx] = cls.encode_binary_mask(iio.imread(imagefolder_path / row["mask_path"], extension=".tif"))
-            supervised_df.to_hdf(hdf5_path / "inria_supervised.h5", "dataset_df", "r+")
-
-        if subset in ("unsupervised", "both"):
-            unsupervised_df = df[~df["supervised"]].drop(columns = ["mask_path", "supervised"]).reset_index(drop = True)
-            with h5py.File(hdf5_path / "inria_unsupervised.h5", "w") as h5file:
-                images = h5file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
-                for idx, row in tqdm(unsupervised_df.iterrows(), total = 180):
-                    images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
-            unsupervised_df.to_hdf(hdf5_path / "inria_unsupervised.h5", "dataset_df", "r+")
-
-    @classmethod
-    def get_dataset_df_from_archive(cls):
-        dataset_dict = {"image_path": list(), "xoff": list(), "yoff": list(), "crs": list()}
-        with zipfile.ZipFile(cls.archive) as zf:
-            image_paths = sorted([x for x in sorted(zf.namelist()) if x.endswith(".tif") and "train/gt/" not in x])
-            for image_path in tqdm(image_paths, desc = f"reading metadata from {cls.archive.name}"):
-                dataset_dict["image_path"].append(image_path)
-                with rio.open(f"zip://{zf.filename}!{image_path}") as raster:
-                    dataset_dict["xoff"].append(raster.transform.xoff)
-                    dataset_dict["yoff"].append(raster.transform.yoff)
-                    dataset_dict["crs"].append(raster.crs.to_epsg())
-        df = (
-            pd.DataFrame(dataset_dict)
-            .assign(supervised = lambda df: df["image_path"].apply(lambda x: x.split('/')[-3] == "train"))
-            .assign(mask_path = lambda df: df["image_path"].apply(lambda x: Path(x).parents[1]/"gt"/Path(x).name))
-        )
-        return df[["image_path", "mask_path", "xoff", "yoff", "crs", "supervised"]].sort_values("image_path").reset_index(drop = True)
-
-    @classmethod
-    def get_dataset_df_from_imagefolder(cls) -> pd.DataFrame:
-        imagefolder_path = get_valid_dir_err(cls.local / "imagefolder")
-        metadata_path = imagefolder_path / "metadata.h5"
-        try:
-            df = pd.read_hdf(metadata_path, "dataset_df", "r")
-        except OSError:
-            dataset_dict = {"image_path": list(), "xoff": list(), "yoff": list(), "crs": list()}
-            image_paths = list((imagefolder_path/"images").rglob("*.tif")) + list((imagefolder_path/"unsup").rglob("*.tif"))
-            for image_path in tqdm(image_paths):
-                dataset_dict["image_path"].append(f"{image_path.parent.name}/{image_path.name}")
-                with rio.open(image_path) as raster:
-                    dataset_dict["xoff"].append(raster.transform.xoff)
-                    dataset_dict["yoff"].append(raster.transform.yoff)
-                    dataset_dict["crs"].append(raster.crs.to_epsg())
-
-            df = (
-                pd.DataFrame(dataset_dict)
-                .assign(supervised = lambda df: df["image_path"].apply(lambda x: x.split('/')[0] == "images"))
-                .assign(mask_path = lambda df: df["image_path"].apply(lambda x: f"masks/{x.split('/')[-1]}"))
+        staging_path = fs.get_new_dir(cls.local, "staging") 
+        imagefolder_path = fs.get_new_dir(cls.local, "imagefolder")
+        if src == "inria.fr":
+            urls = (
+                "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.001",
+                "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.002",
+                "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.003",
+                "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.004",
+                "https://files.inria.fr/aerialimagelabeling/aerialimagelabeling.7z.005"
             )
-            df = df[["image_path", "mask_path", "xoff", "yoff", "crs", "supervised"]].sort_values("image_path").reset_index(drop = True)
-            df.to_hdf(metadata_path, key = "dataset_df", mode = "w")
-        return df
+            # download urls
+            for url in tqdm(urls):
+                download_url(url, staging_path)
+            
+            # extract NEW2-AerialImageDataset.zip from aerialimagelabeling.7z (weird way to package)
+            with multivolumefile.open(staging_path / "aerialimagelabeling.7z", mode = "rb") as multi_archive:
+                with py7zr.SevenZipFile(multi_archive, mode = "r") as archive:
+                    archive.extractall(staging_path)
+                # remove aerialimagelabelling.7z.00x
+                for url in urls:
+                    (staging_path / url.split('/')[-1]).unlink(missing_ok=True)
+
+            # extract imagefolder from NEW2-AerialImageDataset and change directory structure 
+            with zipfile.ZipFile(staging_path / "NEW2-AerialImageDataset.zip", mode = 'r') as archive:
+                archive.extractall(imagefolder_path)
+            shutil.rmtree(staging_path, ignore_errors=True)
+            shutil.move(imagefolder_path / "AerialImageDataset" / "test" / "images", imagefolder_path / "unsup")
+            shutil.move(imagefolder_path / "AerialImageDataset" / "train" / "images", imagefolder_path / "images")
+            shutil.move(imagefolder_path / "AerialImageDataset" / "train" / "gt", imagefolder_path / "masks")
+            shutil.rmtree(imagefolder_path / "AerialImageDataset")
+        else:
+            raise NotImplementedError 
+
+    @classmethod
+    def download(cls, subset: Literal["supervised", "unsupervised"] = "supervised"):
+        """downloads inria_:subset.h5 from s3://inria/hdf5/ to :local/hdf5. raises FileNotFoundError if s5cmd not installed in environment or file not in :remote"""
+        assert subset in ("supervised", "unsupervised"), f"value error, expected :subset to be one of supervised or unsupervised, got {subset}"
+        remote = f"s3://inria/hdf5/inria_{subset}.h5"
+        ret = subprocess.call(["s5cmd", "cp", remote, str(fs.get_new_dir(cls.local, "hdf5"))])
+        if ret != 0:
+            raise FileNotFoundError(f"couldn't find {remote}")
+
+    @classmethod
+    def transform(cls, to: Literal["hdf5"] = "hdf5", subset: Literal["supervised", "unsupervised"] = "supervised", transforms: Optional[T.Transform] = None):
+        """transforms the :subset of dataset to :to and applies :transforms to each (image, mask) if provided"""
+        assert to in ("hdf",), "value error"
+        assert subset in ("supervised", "unsupervised"), "value error"
+        assert transforms is None, "not implemented yet"
+
+        imagefolder_path = cls.local / "imagefolder"
+        index_df = cls.load("index", "imagefolder", subset)
+        spatial_df = cls.load("index", "imagefolder", subset)
+
+        hdf5_path = cls.local / "hdf5" / f"inria_{subset}.h5"
+        index_df.to_hdf(hdf5_path, key = "index", mode = 'w')
+        spatial_df.to_hdf(hdf5_path, key = "spatial", mode = 'r+')
+
+        with h5py.File(hdf5_path, mode = 'r+') as file:
+            images = file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
+            if subset == "supervised":
+                masks = file.create_dataset("masks", 180, dtype = h5py.special_dtype(vlen=np.int64))
+            for idx, row in tqdm(index_df.iterrows(), total = 180):
+                images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
+                if subset == "supervised":
+                    masks[idx] = cls.encode_binary_mask(iio.imread(imagefolder_path / row["mask_path"], extension=".tif"))
+ 
+    @classmethod
+    def load(cls, table: Literal["index", "spatial"], src: Literal["imagefolder", "hdf5"], subset: Literal["supervised", "unsupervised"]) -> pd.DataFrame:
+        assert src in ("imagefolder", "hdf5")
+        assert subset in ("supervised", "unsupervised")
+        # check table in metadata file
+        if src == "hdf5":
+            return pd.read_hdf(cls.local / "hdf5" / f"inria_{subset}.h5", key = table, mode = 'r')
+        elif src == "imagefolder":
+            metadata_path = cls.local / src / "metadata.h5" 
+            try:
+                df = pd.read_hdf(metadata_path, key = table, mode = 'r')
+            except OSError:
+                assert table in ("index", "spatial"), \
+                    f"not implemented error, expected :table to be one of index or spatial, since this function cannot create {table} metadata"
+                table = {k: list() for k in ("image_path", "xoff", "yoff", "crs")}
+                image_paths = (fs.get_valid_dir_err(metadata_path.parent) / ("images" if subset == "supervised" else "unsup")).rglob("*.tif")
+                for image_path in tqdm(image_paths, total = 180):
+                    table["image_path"].append(f"{image_path.parent.name}/{image_path.name}")
+                    with rio.open(image_path) as raster:
+                        table["xoff"].append(raster.transform.xoff)
+                        table["yoff"].append(raster.transform.yoff)
+                        table["crs"].append(raster.crs.to_epsg())
+
+                df = pd.DataFrame(table).sort_values("image_path").reset_index(drop = True)
+                if subset == "supervised":
+                    df["mask_path"] = df["image_path"].apply(lambda x: f"masks/{x.split('/')[-1]}")
+                    df[["image_path", "mask_path"]].to_hdf(metadata_path, key = "index", mode = 'a', index = True)
+                elif subset == "unsupervised":
+                    df["image_path"] = df["image_path"].apply(lambda x: x.split('/')[-1])
+                    df[["image_path"]].to_hdf(metadata_path, key = "index", mode = 'a', index = True)
+                df[["xoff", "yoff", "crs"]].to_hdf(metadata_path, key = "spatial", mode = 'r+', index = True)
+            return df
 
     @staticmethod
     def encode_binary_mask(mask : NDArray):

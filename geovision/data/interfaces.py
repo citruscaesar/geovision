@@ -87,14 +87,7 @@ class DatasetConfig:
                 raise ValueError(f"unknown suffix for :df, expected one of .csv, .h5, got {self.df_path.suffix}")
         else:
             df = fallback_df
-            #if self.tabular_sampler_name is not None:
-                #print(f"applying tabular sampling, using fn: {self.tabular_sampler} and params: {self.tabular_sampler_params}")
-                #df = self.tabular_sampler_params(df = df, **self.tabular_sampler_params)
-            #else:
-                #print("did not find tabular sampler, skipping")
             for sampler in ("tabular", "spatial", "spectral", "temporal"):
-                #sampler_fn = getattr(self, f"{sampler}_sampler")
-                #params = getattr(self, f"{sampler}_sampler_params")
                 sampler_fn = self.__getattribute__(f"{sampler}_sampler")
                 params = self.__getattribute__(f"{sampler}_sampler_params")
                 if sampler_fn is not None:
@@ -112,9 +105,7 @@ class DatasetConfig:
         assert "split" in split_df.columns, "schema error, dataframe does not have a column named 'split'"
         assert split in Dataset.splits, f"value error, expected split to be one of {Dataset.splits}, got {split}"
 
-        if split == "trainval":
-            split_df = split_df[(split_df.split == "train") | (split_df.split == "val")].reset_index(drop=True)
-        elif split != "all":
+        if split not in ("all", "trainvaltest"):
             split_df = split_df[split_df.split == split].reset_index(drop=True)
 
         if prefix_root is not None:
@@ -130,6 +121,8 @@ class DatasetConfig:
             return _get_stratified_split_df
         elif tabular_sampler_name ==  "imagefolder_notest":
             return _get_imagefolder_notest_split_df
+        else:
+            raise AssertionError(f"not implemented error, {tabular_sampler_name} has not been implemented/registered yet")
     
     def _get_spatial_sampler(self, spatial_sampler_name: str):
         return None
@@ -196,7 +189,7 @@ class DataLoaderConfig:
         }
 
 class Dataset(ABC):
-    splits = ("train", "val", "test", "trainval", "all")
+    splits = ("train", "val", "test", "trainvaltest", "all")
 
     @abstractmethod
     def __init__(self, split: str = "all", config: Optional[DatasetConfig] = None) -> None:
@@ -369,7 +362,7 @@ class Compose(Transform):
     def is_color_transform(self, transform) -> bool:
         "_color" in str(type(transform))
 
-def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: float, val_frac: float) -> pd.DataFrame:
+def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: float, val_frac: float, split_on: str) -> pd.DataFrame:
     """returns df split into train-val-test, by stratified(proportionate) sampling, based on
     :split_col and :split_config 
     s.t. num_eval_samples[i] = eval_split * num_samples[i], i -> {0, ..., num_classes-1}.
@@ -389,13 +382,13 @@ def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: floa
     -
     SchemaError
     """ 
-    df = pa.DataFrameSchema({"label_str": pa.Column(str)})(df)
+    df = pa.DataFrameSchema({split_on: pa.Column(str)})(df)
     assert isinstance(test_frac, float), f"config error (invalid type), expected :test_frac to be of type float, got {type(test_frac)}"
     assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
     assert test_frac + val_frac > 0 and test_frac + val_frac < 1, f"config error (invalid value), expected 0 < :test_frac + :val_frac < 1, got :test_frac={test_frac} and :val_frac={val_frac}"
 
     test = (df
-            .groupby("label_str", group_keys=False)
+            .groupby(split_on, group_keys=False)
             .apply(func = lambda x: x.sample(
                     frac = test_frac, random_state = random_seed, axis = 0),
                     include_groups = False
@@ -404,7 +397,7 @@ def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: floa
             
     val = (df
             .drop(test.index, axis = 0)
-            .groupby("label_str", group_keys=False)
+            .groupby(split_on, group_keys=False)
             .apply(func = lambda x: x.sample( # type: ignore
                     frac = val_frac / (1-test_frac), random_state = random_seed, axis = 0),
                     include_groups = False
@@ -430,11 +423,11 @@ def _get_imagefolder_split_df(df: pd.DataFrame) -> pd.DataFrame:
     format in df["image_path"]"""
     return df.assign(split = lambda df: df["image_path"].apply(lambda x: x.split('/')[0]))
 
-def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_frac: float) -> pd.DataFrame:
+def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_frac: float, split_on: str) -> pd.DataFrame:
     """returns df by where samples in the val/ dir are assigned split = test, and stratified samples from the train/ dir are assigned
      split = val based on :val_frac; rest are assigned split = train"""
 
-    df = pa.DataFrameSchema({"label_str": pa.Column(str)})(df)
+    df = pa.DataFrameSchema({split_on: pa.Column(str)})(df)
     assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
     assert val_frac > 0 and val_frac < 1.0, f"config error (invalid value), expected 0 < :val_frac < 1, got :val_frac={val_frac}"
 

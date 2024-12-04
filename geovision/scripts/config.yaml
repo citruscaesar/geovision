@@ -1,34 +1,52 @@
 project_name: imagenette 
-run_name: logging_test 
+run_name: from_scratch 
 random_seed: 42
+
+trainer_task: fit 
+trainer_params:
+  max_epochs: 20 
+  num_sanity_val_steps: 0
+  enable_model_summary: True
+
+log_params:
+  log_to_h5: True
+  log_to_wandb: False 
+  log_to_csv: True
+  wandb_init_params:
+    tags: ["imagenette", "resnet50"]
+    notes: "training from scratch" 
+  log_every_n_steps: 10 
+  log_every_n_epochs: 3 
+  log_models: True 
 
 dataset_name: imagenette_hdf5_classification 
 dataset_params:
   df: null 
   tabular_sampler_name: imagefolder_notest 
   tabular_sampler_params:
-    #test_frac: 0.2
     val_frac: 0.25 
+    split_on: label_str
   spatial_sampler_name: null
   spatial_sampler_params:
-    tile:  []
-    stride:  []
+    tile: []
+    stride: []
   spectral_sampler_name: null 
   spectral_sampler_params: null
   batch_transform_name: null 
-  batch_transform_params:
-    alpha: 1
+  batch_transform_params: 
+    alpha: 0.85
   transforms: |
     from torch import float32
     from torchvision.transforms import v2 as T
     image_pre = T.Compose([
       T.ToImage(),
+      T.Resize((512, 512)),
       T.ToDtype(float32, scale = True),
       T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
+    train_aug = T.Identity()
     train_aug = T.Compose([
-      T.Resize(512),
-      T.RandomCrop(256),
+      T.RandomCrop(256, pad_if_needed = True),
       T.RandomHorizontalFlip(0.5),
     ])
     eval_aug = T.RandomCrop(256, pad_if_needed = True)
@@ -36,60 +54,54 @@ dataset_params:
   
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 32 
+  batch_size: 64 
   gradient_accumulation: 1
-  num_workers: 4 
-  persistent_workers: False
-  pin_memory: False 
-  prefetch_factor: 2
+  num_workers: 3 
+  persistent_workers: True 
+  pin_memory: True 
+  prefetch_factor: 128
 
 metric_name: accuracy 
 metric_params: null
 
-model_name: resnet 
-model_params:
-  version: 18 
-  weights: random 
-
+model_type: classification
+model_params: 
+  # a valid ckpt path means the litmodule state dict will be loaded from here, and :weights in the encoder/deocder params will be ignored
+  # however the ckpt is checked to contain these same encoder and decoders
+  ckpt_path: null
+  encoder_name: resnet
+  encoder_params:
+    layers: 18 
+    weights: kaiming 
+  decoder_name: linear 
+  decoder_params:
+    in_features: 512 
+    bias: True
+  
 criterion_name: cross_entropy
 criterion_params:
   reduction: mean
 
 optimizer_name: sgd 
 optimizer_params:
-  lr: 1.0e-3 
-   #lr: 5.0e-6
+  lr: 5.0e-3
   momentum: 0.9
   weight_decay: 5.0e-4
 
-scheduler_name: linear_lr 
+scheduler_name: linear_lr
 scheduler_params:
   start_factor: 1.0 
   end_factor: 0.001 
   total_iters: 5
+
 # warmup_scheduler_name: linear_lr
 # warmup_scheduler_params:
-  # startup_factor: 0.25
-  # end_factor: 1.0
-  # total_iters: 10
-# warmup_steps: 100
+  # start_factor: 0.001 
+  # end_factor: 0.9 
+  # total_iters: 200 
+#warmup_steps: 200 
+
 scheduler_config_params:
-  monitor: train_loss_epoch 
-
-log_params:
-  log_to_h5: True
-  log_to_wandb: False 
-  log_to_csv: True
-  wandb_params:
-    tags: ["alexnet", "imagenette"]
-    notes: "testing wandb logging" 
-  log_every_n_steps: 5 
-  log_every_n_epochs: 2
-  log_model_outputs: 0
-  log_models: -1 # enable checkpointing
-
-trainer_task: fit 
-trainer_params:
-  max_epochs: 22 
-  num_sanity_val_steps: 0
-  enable_model_summary: True
+  interval: epoch 
+  frequency: 3
+  #monitor: train_loss_epoch 

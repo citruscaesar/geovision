@@ -56,7 +56,7 @@ def test_invalid_split_error(dataset_constructor, root, invalid_split):
 def test_default_split_is_all(dataset):
     assert dataset.split == "all"
 
-@pytest.mark.parametrize("valid_split", ("train", "val", "test", "trainval", "all"))
+@pytest.mark.parametrize("valid_split", ("train", "val", "test", "trainvaltest", "all"))
 def test_valid_split(dataset_constructor, root, valid_split):
     assert dataset_constructor(root = root, split = valid_split).split == valid_split
 

@@ -1,10 +1,10 @@
 from typing import Literal, Optional
 
-import shutil
 import h5py
 import PIL
 import json
 import torch
+import shutil
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -17,7 +17,6 @@ from io import BytesIO
 from pathlib import Path
 from matplotlib.patches import Rectangle 
 from torchvision.transforms import v2 as T
-from skimage.transform import resize
 
 from .interfaces import Dataset, DatasetConfig
 from geovision.io.local import FileSystemIO as fs
@@ -30,23 +29,14 @@ class FMoWETL:
 
     # fmt: off
     class_names = (
-        'airport', 'airport_hangar', 'airport_terminal', 'amusement_park',
-        'aquaculture', 'archaeological_site', 'barn', 'border_checkpoint',
-        'burial_site', 'car_dealership', 'construction_site', 'crop_field',
-        'dam', 'debris_or_rubble', 'educational_institution',
-        'electric_substation', 'factory_or_powerplant', 'fire_station',
-        'flooded_road', 'fountain', 'gas_station', 'golf_course',
-        'ground_transportation_station', 'helipad', 'hospital',
-        'impoverished_settlement', 'interchange', 'lake_or_pond',
-        'lighthouse', 'military_facility', 'multi-unit_residential',
-        'nuclear_powerplant', 'office_building', 'oil_or_gas_facility',
-        'park', 'parking_lot_or_garage', 'place_of_worship',
-        'police_station', 'port', 'prison', 'race_track', 'railway_bridge',
-        'recreational_facility', 'road_bridge', 'runway', 'shipyard',
-        'shopping_mall', 'single-unit_residential', 'smokestack',
-        'solar_farm', 'space_facility', 'stadium', 'storage_tank',
-        'surface_mine', 'swimming_pool', 'toll_booth', 'tower',
-        'tunnel_opening', 'waste_disposal', 'water_treatment_facility',
+        'airport', 'airport_hangar', 'airport_terminal', 'amusement_park', 'aquaculture', 'archaeological_site', 'barn', 'border_checkpoint', 
+        'burial_site', 'car_dealership', 'construction_site', 'crop_field', 'dam', 'debris_or_rubble', 'educational_institution',
+        'electric_substation', 'factory_or_powerplant', 'fire_station', 'flooded_road', 'fountain', 'gas_station', 'golf_course',
+        'ground_transportation_station', 'helipad', 'hospital', 'impoverished_settlement', 'interchange', 'lake_or_pond', 'lighthouse', 
+        'military_facility', 'multi-unit_residential', 'nuclear_powerplant', 'office_building', 'oil_or_gas_facility', 'park', 
+        'parking_lot_or_garage', 'place_of_worship', 'police_station', 'port', 'prison', 'race_track', 'railway_bridge', 'recreational_facility',
+        'road_bridge', 'runway', 'shipyard', 'shopping_mall', 'single-unit_residential', 'smokestack', 'solar_farm', 'space_facility', 'stadium', 
+        'storage_tank', 'surface_mine', 'swimming_pool', 'toll_booth', 'tower', 'tunnel_opening', 'waste_disposal', 'water_treatment_facility',
         'wind_farm', 'zoo'
     )
 
@@ -55,7 +45,6 @@ class FMoWETL:
         "nuclear_powerplant", "port", "runway", "shipyard", "space_facility"
     )
     # fmt: on
-
     crs = "EPSG:4326"
     spatial_ref = "GCS_WGS_1984"
     num_classes = len(class_names)
@@ -90,7 +79,16 @@ class FMoWETL:
         cp train val test and seq directories, ignoring all .json files
         cp groundtruth.tar.bz2 and extract to :local_staging/:dataset/groundtruth/, removing _gt from test and seq dirs, mapping jsons
         """
-        pass
+        import os 
+
+        assert shutil.which('s5cmd') is not None, "couldn't find s5cmd on the system"
+        if os.environ.get('S3_ENDPOINT_URL') is not None:
+            del os.environ['S3_ENDPOINT_URL']
+        
+        remote = "s3://spacenet-dataset/Hosted-Datasets/fmow/fmow-rgb/*"
+        local = str(cls.local_staging)
+
+        os.system(f's5cmd --no-sign-request sync --exclude "*_msrgb.jpg" --exclude "*rgb.json" {remote} {local}')
 
     @classmethod
     def download_rgb_from_storage(cls, bucket = "s3://fmow/archives/rgb"):
@@ -248,10 +246,10 @@ class FMoWETL:
             raise ValueError(f"invalid :dataset, expected either rgb or ms, got {dataset}")
 
         df = cls.get_multiclass_classification_df_from_metadata()
-        hdf5 = fs.get_new_dir(local, "hdf5") / f"fmow_{dataset}_multiclass.h5"
+        ds = fs.get_new_dir(local, "hdf5") / f"fmow_{dataset}_multiclass.h5"
 
-        with h5py.File(hdf5, mode = "w") as h5file:
-            images = h5file.create_dataset("images", (len(df),), dtype = h5py.special_dtype(vlen=np.dtype("uint8")))
+        with h5py.File(ds, mode = "w") as f:
+            images = f.create_dataset("images", shape = len(df), dtype = h5py.special_dtype(vlen=np.uint8))
             for idx, row in tqdm(df.iterrows(), total = len(df)):
                 image = iio.imread(staging / row["image_path"]).astype(np.uint8)
                 image = image[row["outer_bbox_tl_0"]:row["outer_bbox_br_0"], row["outer_bbox_tl_1"]:row["outer_bbox_br_1"]]
@@ -261,7 +259,7 @@ class FMoWETL:
         df["img_height"] = df.apply(lambda x: x["outer_bbox_br_0"] - x["outer_bbox_tl_0"], axis = 1)
         df["img_width"] = df.apply(lambda x: x["outer_bbox_br_1"] - x["outer_bbox_tl_1"], axis = 1)
         df = df[["image_path", "label_str", "img_width", "img_height", "inner_bbox_tl_0", "inner_bbox_tl_1", "inner_bbox_br_0", "inner_bbox_br_1"]]
-        df.to_hdf(hdf5, key = "dataset_df", mode = "r+")
+        df.to_hdf(ds, key = "index", mode = "r+")
     
     def transform_to_superresolution_imagefolder(cls):
         def get_category(image_path: Path):
@@ -271,16 +269,16 @@ class FMoWETL:
                     return rename_dict[category]
                 return category
 
-        test_df = pd.read_json(FMoW.local_rgb/"groundtruth"/"test_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("test_gt", "test")))
-        seq_df = pd.read_json(FMoW.local_rgb/"groundtruth"/"seq_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("seq_gt", "seq")))
+        test_df = pd.read_json(cls.local_rgb/"groundtruth"/"test_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("test_gt", "test")))
+        seq_df = pd.read_json(cls.local_rgb/"groundtruth"/"seq_gt_mapping.json").assign(input = lambda df: df["input"].apply(lambda x: str(x).replace("seq_gt", "seq")))
         rename_dict = dict(zip(test_df["output"], test_df["input"])) | dict(zip(seq_df["output"], seq_df["input"]))
 
-        sen_df = FMoW.get_sentinel_metadata_df()
+        sen_df = cls.get_sentinel_metadata_df()
         sen_df["timestamp"] = pd.to_datetime(sen_df["timestamp"], format = "mixed")
         sen_df["category"] = sen_df["image_path"].apply(lambda x: '/'.join(x.split('/')[:-1]))
 
         rgb_df = (
-            FMoW.get_metadata_df()
+            cls.get_metadata_df()
             .assign(split = lambda df: df["image_path"].apply(lambda x: str(x).split('/')[0]))
             .assign(category = lambda df: df["image_path"].apply(lambda x: get_category(x)))
         )
@@ -487,7 +485,7 @@ class FMoWHDF5Classification(Dataset):
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, FMoWETL.num_classes))))
     }, index = pa.Index(int, unique = True))
 
-    def __init__(self, split: Literal["train", "val", "trainval", "test", "all"] = "all", config: Optional[DatasetConfig] = None):
+    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
         self._root = fs.get_valid_file_err(FMoWETL.local_rgb, "hdf5", "fmow_rgb_multiclass.h5")
         self._split = self.get_valid_split_err(split)
         self._config = config or FMoWETL.default_config
@@ -503,7 +501,7 @@ class FMoWHDF5Classification(Dataset):
         with h5py.File(self.root, mode="r") as f:
             image = iio.imread(BytesIO(f["images"][idx_row["df_idx"]]))
         image = self._config.image_pre(image)
-        if self._split in ("train", "trainval", "all"):
+        if self._split in ("train", "trainvaltest"):
             image = self._config.train_aug(image)
         elif self._split in ("val", "test"):
             image = self._config.eval_aug(image)
@@ -514,7 +512,7 @@ class FMoWHDF5Classification(Dataset):
         return self._root
 
     @property
-    def split(self) -> Literal["train", "val", "trainval", "test", "all"]:
+    def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
         return self._split
 
     @property
