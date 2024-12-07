@@ -1,4 +1,5 @@
-from typing import Literal, Optional
+from typing import Literal, Optional, Callable
+from numpy.typing import NDArray
 
 import h5py  # type: ignore
 import torch
@@ -6,21 +7,25 @@ import zipfile
 import tarfile
 import shutil
 import litdata
+import warnings
+import subprocess
 import numpy as np
 import pandas as pd
 import pandera as pa
-import multiprocessing
 import imageio.v3 as iio
 import torchvision.transforms.v2 as T  # type: ignore
 
 from tqdm import tqdm
 from io import BytesIO  #
 from pathlib import Path
-from torchvision.io import read_image, ImageReadMode
+from itertools import chain
+from skimage.transform import resize
+from torchvision.io import read_image, decode_jpeg, ImageReadMode
+from multiprocessing import Pool, cpu_count
 
-from ..io.local import FileSystemIO as fs
-from ..io.remote import HTTPIO
-from .interfaces import Dataset, DatasetConfig
+from geovision.io.remote import HTTPIO
+from geovision.io.local import FileSystemIO as fs
+from geovision.data.interfaces import Dataset, DatasetConfig
 
 import logging
 logger = logging.getLogger(__name__)
@@ -29,11 +34,21 @@ logger = logging.getLogger(__name__)
 # Download ImageNet-22k SynSets from HuggingFace
 # 1. ImageNet-1k, ImageNet-100, ImageNet-10 (Imagenette), TinyImageNet (64x64)
 
+
+# Upload The ImageNet Archive to Contabo -> Download onto the Networked Storage -> Experient with Different Options (ImageFolder / HDF / InMemory etc.) for the fastest batch time
+# 1. Imagenet Archive -> Metadata
+# 2. Find Corrupted Images and save to Archive Metadata
+# 3. Transform(to: HDF / ImageFolder, src: [ilvrc_archive, imagenette_archive], subset: [1000 (ILSVRC-2012), 100 (Custom WordNet), 10 (Imagenette)], image_transforms: Resize(256), df_transforms: Subset, FilterShit, ShuffleTrain, encode_to_jpg: bool = True)
+#   -> chunk_size=256 if to=HDF along the first dimension
+#   -> df_transforms will be responsible for applying the filtering and subsetting operations (explicitly), it will call cls.load if needed
+#   -> 
+# 4. Load(table: index, corrupt, synsets, src: Archive, HDF5, Imagefolder, subset: "ilsvrc_2012", "imagenette")
+
+
 class ImagenetETL:
     local = Path.home() / "datasets" / "imagenet"
-    archive = local / "archives" / "imagenet-object-localization-challenge.zip"
     # fmt: off
-    class_names =  ("tench", "goldfish", "great white shark", "tiger shark", "hammerhead shark", "electric ray", "stingray", "cock",
+    imagenet_class_names =  ("tench", "goldfish", "great white shark", "tiger shark", "hammerhead shark", "electric ray", "stingray", "cock",
         "hen", "ostrich", "brambling", "goldfinch", "house finch", "junco", "indigo bunting", "American robin", "bulbul", "jay",
         "magpie", "chickadee", "American dipper", "kite", "bald eagle", "vulture", "great grey owl", "fire salamander", "smooth newt",
         "newt", "spotted salamander", "axolotl", "American bullfrog", "tree frog", "tailed frog", "loggerhead sea turtle",
@@ -144,13 +159,21 @@ class ImagenetETL:
         "bridegroom", "scuba diver", "rapeseed", "daisy", "yellow lady's slipper", "corn", "acorn", "rose hip", "horse chestnut seed", "coral fungus", 
         "agaric", "gyromitra", "stinkhorn mushroom", "earth star", "hen-of-the-woods", "bolete", "ear of corn", "toilet paper"
     )
+    imagenette_class_names = (
+        "tench", "english_springer", "cassette_player", "chain_saw", "church", "french_horn", "garbage_truck", "gas_pump", "golf_ball", "parachute"
+    )
+    warning_idxs = (
+        14447, 55541, 59005, 82043, 109039, 132926, 147946, 148200, 148461, 149091, 149075, 149075, 149091, 149150, 149157, 149175, 149179, 149210, 161793,
+        164725, 170021, 170122, 197088, 251657, 258309, 314614, 389572, 426998, 434647, 455142, 456227, 476489, 498503, 499108, 499266, 507884, 526417,
+        551234, 574523, 626422, 696344, 724759, 752846, 787840, 793951, 793981, 801232, 802987, 816270, 817533, 821501, 831922, 841920, 876793, 884208, 
+        888236, 897070, 943737, 1036821, 1038877, 1042938, 1067042, 1095673, 1139200, 1190161, 1290684, 1312510, 1318704, 1319836 
+    )
     # fmt: on
-    num_classes = len(class_names)
     means = (0.485, 0.456, 0.406)
     std_devs = (0.229, 0.224, 0.225)
     default_config = DatasetConfig(
         random_seed=42,
-        tabular_sampling="imagefolder_notest",
+        tabular_sampler_name="imagefolder_notest",
         tabular_sampler_params=dict(
             val_frac=0.05,
         ),
@@ -165,94 +188,331 @@ class ImagenetETL:
     )
 
     @classmethod
-    def download(cls):
-        r"""download and save imagenet-1k archive to :imagenette/archives/imagenet-object-localization-challenge.zip"""
-        pass
+    def extract(cls, src: Literal["kaggle", "huggingface", "fastai"], subset: Literal["imagenet_1k", "imagenette"]):
+        """extract, preprocess and save imagenet-1k archive to :imagenet/archives/imagenet-object-localization-challenge.zip"""
+        assert subset in ("imagenet_1k", "imagenette")
+        if subset == "imagenet_1k":
+            assert src in ("kaggle", "huggingface")
+            if src == "kaggle":
+                # download to cls.local / "staging" 
+                subprocess.call(["kaggle competitions download -c imagenet-object-localization-challenge"])
+            elif src == "huggingface":
+                # download multipart from ILSVRC/imagenet-1k and join them as a single archive (symlinked or sth?)
+                ...
+        elif subset == "imagenette":
+            assert src in ("fastai", )
+            if src == "fastai":
+                HTTPIO.download_url("https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz", cls.local / "staging")
 
     @classmethod
-    def transform_to_imagefolder(cls):
-        """extracts files from archive to :imagenet/imagefolder, raises OSError if :imagenet/archives/imagenet-object-localization-challenge.zip not found"""
+    def load(
+        cls, 
+        table: Literal["index", "corrupt", "synsets"], 
+        src: Literal["archive", "imagefolder", "hdf5"], 
+        subset: Literal["imagenet_1k", "imagenet_100", "imagnette"],
+    ) -> pd.DataFrame:
 
-        imagefolder_path = fs.get_new_dir(cls.local / "imagefolder")
-        temp_path = fs.get_new_dir(cls.local / "temp")
+        assert src in ("archive", "imagefolder", "hdf5")
+        assert subset in ("imagenet_1k", "imagenet_100", "imagenette")
+        if subset == "imagenet_1k":
+            def _assign_labels(df: pd.DataFrame):
+                synsets = sorted(df["label_synset"].unique())
+                return (
+                    df.sort_values("label_synset")
+                    .assign(label_idx=lambda df: df["label_synset"].apply(lambda x: synsets.index(x)))
+                    .assign(label_str=lambda df: df["label_idx"].apply(lambda x: cls.imagenet_class_names[x]))
+                    .sort_values("label_idx")
+                    .reset_index(drop=True)
+                )
+            if src == "archive":
+                archive_path = fs.get_valid_file_err(cls.local, "staging", "imagenet-object-localization-challenge.zip")
+                metadata_path = archive_path.parent / "imagenet_1k_metadata.h5"
+                try:
+                    return pd.read_hdf(metadata_path, key = table, mode = 'r')
+                except OSError:
+                    assert table == "index", f"expected :table to be 'index' since {table} metadata was not found and cannot be computed by this fn"
 
-        # extract archive contents to temp
-        with zipfile.ZipFile(fs.get_valid_file_err(cls.archive)) as zf:
-            zf.extractall(temp_path, [n for n in zf.namelist() if not n.endswith(".xml")])
+                    with zipfile.ZipFile(archive_path) as zf:
+                        zip_images = zf.namelist()  
+                        val_df = pd.read_csv(zf.open("LOC_val_solution.csv"))
 
-        # move metadata files to imagefolder
-        shutil.move(temp_path / "LOC_synset_mapping.txt", imagefolder_path / "LOC_synset_mapping.txt")
-        shutil.move(temp_path / "LOC_val_solution.csv", imagefolder_path / "LOC_val_solution.csv")
+                    train_df = (
+                        pd.DataFrame({"image_path": [n for n in zip_images if n.endswith(".JPEG") and "train" in n]}).
+                        assign(label_synset=lambda df: df["image_path"].apply(lambda x: x.split('/')[-2]))
+                    )
+                    val_df = (
+                        val_df
+                        .assign(image_path=lambda df: df["ImageId"].apply(lambda x: str(Path("ILSVRC")/"Data"/"CLS-LOC"/"val"/f"{x}.JPEG")))
+                        .assign(label_synset=lambda df: df["PredictionString"].apply(lambda x: x.split(" ")[0]))
+                        .drop(columns=["ImageId", "PredictionString"])
+                    )
+                    df = pd.concat([train_df, val_df]).pipe(_assign_labels)
+                    df.to_hdf(metadata_path, key = "index", mode = "a") # NOTE: don't want to remove any other metadata from the file, mode = a
+                    return df
 
-        # prepare subdirs for imagefolder
-        temp_train = temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "train"
-        for class_synset in (c.stem for c in temp_train.iterdir()):
-            fs.get_new_dir(imagefolder_path, "train", class_synset)
-            fs.get_new_dir(imagefolder_path, "val", class_synset)
-        test_dir = fs.get_new_dir(imagefolder_path, "test")
+            elif src == "imagefolder":
+                imagefolder_path = fs.get_valid_dir_err(cls.local / "imagefolder" / subset, empty_ok=False)
+                metadata_path = imagefolder_path / "metadata.h5"
+                try:
+                    return pd.read_hdf(metadata_path, key = table, mode = 'r')
+                except OSError:
+                    assert table == "index", f"expected :table to be 'index' since {table} metadata was not found and cannot be computed by this fn"
+                    df = (
+                        pd.DataFrame({"image_path": list(chain((imagefolder_path / "train").rglob("*.jpg"), (imagefolder_path / "val").rglob("*.jpg")))})
+                        .assign(image_path=lambda df: df["image_path"].apply(lambda x: '/'.join(str(x).split('/')[-3:])))
+                        .assign(label_synset=lambda df: df["image_path"].apply(lambda x: x.split('/')[-2]))
+                        .pipe(_assign_labels)
+                    )
+                    return df
 
-        # move train
-        for temp_path in tqdm(list(temp_train.rglob("*.JPEG")), desc=f"{imagefolder_path / "train"}"):
-            image_path = imagefolder_path / "train" / temp_path.parent.name / f"{temp_path.stem}.jpg"
-            shutil.move(temp_path, image_path)
+            elif src == "hdf5":
+                return pd.read_hdf(cls.local / "hdf5" / "imagenet_1k.h5", key = table, mode = 'r') 
+        
+        elif subset == "imagenet_100":
+            raise NotImplementedError 
 
-        # move val
-        val_df = (
-            pd.read_csv(imagefolder_path / "LOC_val_solution.csv")
-            .assign(temp_path=lambda df: df["ImageId"].apply(lambda x: temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "val" / f"{x}.JPEG"))
-            .assign(parent_dir=lambda df: df["PredictionString"].apply(lambda x: x.split(" ")[0]))
-            .assign(image_path=lambda df: df.apply(lambda x: imagefolder_path / "val" / x["parent_dir"] / f"{x["ImageId"]}.jpg", axis=1))
-            .drop(columns=["ImageId", "PredictionString"])
-        )
-        for _, row in tqdm(val_df.iterrows(), total=len(val_df), desc=f"{imagefolder_path / "val"}"):
-            shutil.copy(row["temp_path"], row["image_path"])
+        elif subset == "imagenette":
+            def _assign_labels(df: pd.DataFrame) -> pd.DataFrame:
+                class_synsets = sorted(df["image_path"].apply(lambda x: x.split('/')[-2]).unique())
+                return (
+                    df
+                    .assign(label_str=lambda df: df["image_path"].apply(lambda x: x.split('/')[-2]))
+                    .assign(label_idx=lambda df: df["label_str"].apply(lambda x: class_synsets.index(x)))
+                    .assign(label_str=lambda df: df["label_idx"].apply(lambda x: cls.imagenette_class_names[x]))
+                    .sort_values("label_idx")
+                    .reset_index(drop=True)
+                )
+            if src == "archive":
+                archive_path = fs.get_valid_file_err(cls.local, "staging", "imagenette2.tgz")
+                metadata_path = archive_path.parent / "imagenette_metadata.h5"
+                try: 
+                    return pd.read_hdf(metadata_path, key = table, mode = 'r')
+                except OSError:
+                    with tarfile.open(archive_path) as a:
+                        df = pd.DataFrame({"image_path": [p for p in a.getnames() if p.endswith(".JPEG")]})
+                    df = df.pipe(_assign_labels)
+                    df.to_hdf(metadata_path, key = "index", mode = 'w')
+                    return df
 
-        # move test
-        for temp_path in tqdm(list((temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "test").rglob("*.JPEG")), desc=f"{imagefolder_path / "test"}"):
-            shutil.copy(temp_path, test_dir / f"{temp_path.stem}.jpg")
+            elif src == "imagefolder":
+                imagefolder_path = fs.get_valid_dir_err(cls.local, "imagefolder", subset)
+                metadata_path = imagefolder_path.parent / "metadata.h5"
+                try:
+                    return pd.read_hdf(metadata_path, key = table, mode = 'r')
+                except OSError:
+                    df = (
+                        pd.DataFrame({"image_path": list(imagefolder_path.rglob("*.jpg"))})
+                        .assign(image_path = lambda df: df["image_path"].apply(lambda x: '/'.join(x.split('/')[-3:])))
+                        .pipe(_assign_labels)
+                    )
+                    df.to_hdf(metadata_path, key = "index", mode = 'a')
+                    return df
 
-        # save metadata
-        cls.get_index_df_from_imagefolder(absolute_paths=True).to_hdf(imagefolder_path/"metadata.h5", key = "index", mode = 'a')
+            elif src == "hdf5":
+                return pd.read_hdf(cls.local / "hdf5" / "imagenette.h5", key = table, mode = 'r') 
 
-        # cleanup
-        shutil.rmtree(temp_path)
+    @classmethod
+    def transform(
+        cls, 
+        to: Literal["hdf5", "imagefolder"], 
+        subset: Literal["imagenet_1k", "imagenet_100", "imagenette"], 
+        df_transform: Optional[Callable[..., pd.DataFrame] | list[Callable[..., pd.DataFrame]]] = None,
+        resize_to: int = 0, 
+        jpg_quality: int = 95,
+        chunks: int = 0,
+        val_only: bool = False,
+        **kwargs
+    ):
+        assert to in ("hdf5", "imagefolder")
+        assert subset in ("imagenet_1k", "imagenette")
+        if subset == "imagenet_1k":
+            archive_path = cls.local / "staging" / "imagenet-object-localization-challenge.zip"
+            assert fs.is_valid_file(archive_path)
+
+            if to == "imagefolder":
+                assert not val_only, ":val_only not implemented for imagefolder"
+                imagefolder_path = fs.get_new_dir(cls.local / to / subset)
+                temp_path = fs.get_new_dir(cls.local / "temp")
+
+                df = cls.load(table = 'index', src = 'archive', subset = 'imagenet_1k')
+                if df_transform is not None:
+                    if isinstance(df_transform, list):
+                        for transform in df_transform:
+                            df = df.pipe(transform)
+                    elif callable(df_transform):
+                        df = df.pipe(df_transform)
+                    else:
+                        raise AssertionError("expected :df_transform to be a fn: df -> df, or a list of such fn")
+
+                # extract archive contents to temp
+                # TODO: add resize, re-encoding and progressbar
+                with zipfile.ZipFile(archive_path) as zf:
+                    zf.extractall(temp_path, df["image_path"])
+
+                # move metadata files to imagefolder
+                shutil.move(temp_path / "LOC_synset_mapping.txt", imagefolder_path / "LOC_synset_mapping.txt")
+                shutil.move(temp_path / "LOC_val_solution.csv", imagefolder_path / "LOC_val_solution.csv")
+
+                # prepare subdirs for imagefolder
+                temp_train = temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "train"
+                for label_synset in df["label_synset"].unique():
+                    fs.get_new_dir(imagefolder_path, "train", label_synset)
+                    fs.get_new_dir(imagefolder_path, "val", label_synset)
+                test_dir = fs.get_new_dir(imagefolder_path, "test")
+
+                # move train
+                for temp_path in temp_train.rglob("*.JPEG"):
+                    image_path = imagefolder_path / "train" / temp_path.parent.name / f"{temp_path.stem}.jpg"
+                    shutil.move(temp_path, image_path)
+
+                # move val
+                val_df = (
+                    pd.read_csv(imagefolder_path / "LOC_val_solution.csv")
+                    .assign(temp_path=lambda df: df["ImageId"].apply(lambda x: temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "val" / f"{x}.JPEG"))
+                    .assign(parent_dir=lambda df: df["PredictionString"].apply(lambda x: x.split(" ")[0]))
+                    .assign(image_path=lambda df: df.apply(lambda x: imagefolder_path / "val" / x["parent_dir"] / f"{x["ImageId"]}.jpg", axis=1))
+                    .drop(columns=["ImageId", "PredictionString"])
+                )
+                for _, row in tqdm(val_df.iterrows(), total=len(val_df), desc=f"{imagefolder_path / "val"}"):
+                    shutil.copy(row["temp_path"], row["image_path"])
+
+                # move test
+                for temp_path in tqdm(list((temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "test").rglob("*.JPEG")), desc=f"{imagefolder_path / "test"}"):
+                    shutil.copy(temp_path, test_dir / f"{temp_path.stem}.jpg")
+
+                # cleanup
+                shutil.rmtree(temp_path)
+                cls.load('index', 'imagefolder', 'imagenet_1k')
+
+            elif to == "hdf5":
+                assert resize_to >= 0 
+                assert jpg_quality >= 0 and jpg_quality <= 95 
+                assert chunks >= 0
+
+                hdf5_path = fs.get_new_dir(cls.local, "hdf5") / "imagenet.h5"
+                df = cls.load('index', 'archive', subset)#.assign(image_path = lambda df: df["image_path"].apply(lambda x: x.as_posix()))
+
+                if df_transform is not None:
+                    if isinstance(df_transform, list):
+                        for transform in df_transform:
+                            df = df.pipe(transform)
+                    elif callable(df_transform):
+                        df = df.pipe(df_transform)
+                    else:
+                        raise AssertionError("expected :df_transform to be a fn: df -> df, or a list of such fn")
+ 
+                if val_only:
+                    hdf5_path = hdf5_path.parent / "imagenet_val.h5"
+                    df = df.loc[lambda df: df["image_path"].apply(lambda x: "val" in x)]
+                    cls._write_to_hdf(df, archive_path, hdf5_path, resize_to, jpg_quality, chunks)
+
+                else:
+                    args = list()
+                    for i, indices in enumerate(np.array_split(df.index, 15)):
+                        args.append((df.iloc[indices], archive_path, hdf5_path.parent / f"{hdf5_path.stem}_part={i}.h5", resize_to, jpg_quality, chunks))
+
+                    with Pool(cpu_count() - 1) as pool:
+                        pool.starmap(cls._write_to_hdf, args)
+
+                    df.to_hdf(hdf5_path, mode = 'w', key = "index")
+                    with h5py.File(hdf5_path, mode='r+') as f:
+                        vlen_dtype = h5py.special_dtype(vlen = np.uint8)
+                        layout = h5py.VirtualLayout(shape = len(df), dtype = vlen_dtype)
+                        for idx, (vds_path, vds_df) in enumerate(args):
+                            layout[idx*len(vds_df): (idx+1)*len(vds_df)] = h5py.VirtualSource(vds_path, "images", len(df), vlen_dtype)
+                        f.create_virtual_dataset("images", layout)
+
+        elif subset == "imagenette":
+            archive_path = fs.get_valid_file_err(cls.local, "staging", "imagenette2.tgz")
+
+            if to == "imagefolder":
+                def move_tempfiles_to_imagefolder(split: Literal["train", "val"]):
+                    for src_path in tqdm(list((temp_path / "imagenette2" / split).rglob("*.JPEG")), desc=f"{imagefolder_path / split}"):
+                        dst_path = imagefolder_path / split / src_path.parent.stem / f"{src_path.stem}.jpg"
+                        dst_path.parent.mkdir(exist_ok=True, parents=True)
+                        shutil.move(src_path, dst_path)
+
+                imagefolder_path = fs.get_new_dir(cls.local, "imagefolder")
+                temp_path = fs.get_new_dir(cls.local, "temp")
+                with tarfile.open(archive_path) as tf:
+                    tf.extractall(temp_path)
+                move_tempfiles_to_imagefolder("train")
+                move_tempfiles_to_imagefolder("val")
+                shutil.rmtree(temp_path)
+                cls.load('index', 'imagefolder', 'imagenette')
+
+            elif to == "hdf5":
+                hdf5_path = fs.get_new_dir(cls.local, "hdf5") / "imagenette.h5"
+                df = cls.load('index', 'archive', 'imagenette')
+
+                with tarfile.open(archive_path, mode = 'r') as tf:
+                    with h5py.File(hdf5_path, mode = 'w') as f: 
+                        images = f.create_dataset("images", len(df), h5py.special_dtype(vlen = np.uint8), chunks = chunks)
+                        for idx, row in tqdm(df.iterrows(), total = len(df)):
+                            image = iio.imread(tf.extractfile(row["image_path"])).squeeze()
+                            images[idx] = cls._write_to_jpg(image, resize_to, jpg_quality)
+
+                df["image_path"] = df["image_path"].apply(lambda x: x.split('/')[-3:])
+                df.to_hdf(hdf5_path, key = 'index', mode = 'r+')
+
+    @classmethod
+    def _write_to_hdf(cls, df: pd.DataFrame, archive_path: Path, ds_path: Path, resize_to: int, jpg_quality: int, chunks: int):
+        with zipfile.ZipFile(archive_path, mode = 'r') as zf:
+            with h5py.File(ds_path, mode = 'w') as f:
+                images = f.create_dataset("images", shape = len(df), dtype = h5py.special_dtype(vlen = np.uint8), chunks = chunks) 
+                for idx, row in tqdm(df.reset_index().iterrows(), total = len(df)):
+                    image = iio.imread(zf.read(row["image_path"])).squeeze()
+                    images[idx] = cls._write_to_jpg(image, resize_to, jpg_quality)
+
+        df["image_path"] = df["image_path"].apply(lambda x: x.split('/')[-3:])
+        df.to_hdf(ds_path, key = "index", mode = 'r+')
+
+    @staticmethod
+    def _write_to_jpg(image: NDArray, resize_to:int, jpg_quality: int) -> NDArray:
+        if resize_to:
+            image = resize(image, (resize_to, resize_to), preserve_range=True, anti_aliasing=True).astype(np.uint8)
+        if image.ndim < 3:
+            image = np.stack((image,)*3, axis = -1)
+        return np.frombuffer(iio.imwrite("<bytes>", image, extension=".jpg", quality = jpg_quality), dtype = np.uint8)
+
+    @staticmethod
+    def _list_corrupted_images(df: pd.DataFrame, archive_path: Path):
+        corrupted = list()
+        with zipfile.ZipFile(archive_path) as zf:
+            for idx, row in tqdm(df.iterrows(), total = len(df)):
+                try:
+                    iio.imread(zf.read(row["image_path"]), extension='.jpeg')
+                except Warning as w:
+                    corrupted.append(idx)
+                    print(f"warning on idx = {idx}, [{w}]")
+                    continue
+                except Exception as e:
+                    corrupted.append(idx)
+                    print(f"exception on idx = {idx}, [{e}]")
+                    continue
+        return corrupted
     
     @classmethod
-    def write_to_hdf(cls, filename: Path, df: pd.DataFrame):
-        df.to_hdf(filename, mode = 'w', key = "index")
-        with zipfile.ZipFile(cls.archive, mode = 'r') as zf:
-            with h5py.File(filename, mode = 'r+') as f:
-                images = f.create_dataset("images", shape = len(df), dtype = h5py.special_dtype(vlen = np.uint8)) 
-                for idx, row in tqdm(df.reset_index().iterrows(), total = len(df)):
-                    images[idx] = np.frombuffer(zf.read(row["image_path"]), dtype=np.uint8)
+    def find_corrupted_images(cls) -> pd.DataFrame:
+        archive_path = cls.local / "staging" / "imagenet-object-localization-challenge.zip"
+        df = cls.load(table = 'index', src = 'archive', subset = 'imagenet_1k')
+
+        warnings.filterwarnings('error')
+        with Pool(cpu_count()-1) as pool:
+            sus_idxs = pool.starmap(cls._list_corrupted_images, [(df.loc[idxs], archive_path) for idxs in np.array_split(df.index, cpu_count()-1)])
+        warnings.resetwarnings()
+
+        idxs = list() 
+        for subarray in sus_idxs:
+            for idx in subarray:
+                idxs.append(idx)
+        df = df.loc[idxs]
+        df.to_hdf(archive_path.parent / "metadata.h5", key = "corrupted", mode = "a")
+        return df
 
     @classmethod
-    def transform_to_hdf(cls, num_vds: int = 15, val_only: bool = False):
-        assert isinstance(num_vds, int) and num_vds >= 1, \
-            f"value error, expected :num_vds to be an integer >= 1, got {num_vds}"
-        ds_path = fs.get_new_dir(cls.local, "hdf5") / "imagenet.h5"
-        df = ImagenetETL.get_dataset_df_from_archive().assign(image_path = lambda df: df["image_path"].apply(lambda x: x.as_posix()))
-        
-        if val_only:
-            df = df.loc[lambda df: df["image_path"].apply(lambda x: "val" in x)]
-            ds_path = ds_path.parent / "imagenet_val.h5"
-            num_vds = 1
-        
-        if num_vds == 1:
-            cls.write_to_hdf(ds_path, df)
-        else:
-            args = [(ds_path.parent / f"{ds_path.stem}_part={idx}.h5", df.iloc[idxs]) for idx, idxs in enumerate(np.array_split(df.index, num_vds))]
-            with multiprocessing.Pool(multiprocessing.cpu_count() - 1) as pool:
-                pool.starmap(cls.write_to_hdf, args)
-            
-            df.to_hdf(ds_path, mode = 'w', key = "index")
-            with h5py.File(ds_path, mode='r+') as f:
-                layout = h5py.VirtualLayout(shape = len(df), dtype = h5py.special_dtype(vlen = np.uint8))
-                for idx, (vds_path, vds_df) in enumerate(args):
-                    layout[idx*len(vds_df): (idx+1)*len(vds_df)] = h5py.VirtualSource(
-                        path_or_dataset = vds_path, name = "images", shape = len(vds_df), dtype = h5py.special_dtype(vlen = np.uint8)
-                    )
-                f.create_virtual_dataset("images", layout)
+    def filter_corrupted_images(cls, df: pd.DataFrame) -> pd.DataFrame:
+        return df.drop(index=cls.load(table = 'corrupt', src = 'archive', subset = 'imagenet_1k'))
 
     @classmethod
     def get_dataset_df_from_litdata(cls, config: Optional[DatasetConfig] = None, schema: Optional[pa.DataFrameSchema] = None) -> pd.DataFrame:
@@ -266,160 +526,17 @@ class ImagenetETL:
             )
             # NOTE: don't save df to litdata dir here, it is saved by worker 0 in the litdata encoder script
 
-    @classmethod
-    def get_dataset_df_from_archive(cls) -> pd.DataFrame:
-        """generates and returns dataset_df from :imagenet/archive/imagenet-object-localization-challenge.zip, raises OSError if archive is not found"""
-        with zipfile.ZipFile(fs.get_valid_file_err(cls.archive)) as zf:
-            train_df = pd.DataFrame({"image_path": [Path(n) for n in zf.namelist() if n.endswith(".JPEG") and "train" in n]}).assign(
-                label_synset=lambda df: df["image_path"].apply(lambda x: x.parent.stem)
-            )
-            val_df = (
-                pd.read_csv(zf.open("LOC_val_solution.csv"))
-                .assign(image_path=lambda df: df["ImageId"].apply(lambda x: Path("ILSVRC") / "Data" / "CLS-LOC" / "val" / f"{x}.JPEG"))
-                .assign(label_synset=lambda df: df["PredictionString"].apply(lambda x: x.split(" ")[0]))
-                .drop(columns=["ImageId", "PredictionString"])
-            )
-            return pd.concat([train_df, val_df]).pipe(cls._get_dataset_df)
-
-    @classmethod
-    def get_index_df_from_imagefolder(cls, absolute_paths: bool = True) -> pd.DataFrame:
-        """looks for/generates and returns dataset_df from :imagenet/imagefolder, raises OSError if imagefolder dir is not found/empty"""
-        imagefolder_path = fs.get_valid_dir_err(cls.local / "imagefolder")
-        try:
-            return pd.read_hdf(imagefolder_path/"metadata.h5", key = "index", mode = 'r')
-        except OSError:
-            df = (
-                pd.DataFrame({"image_path": list((imagefolder_path / "train").rglob("*.jpg")) + list((imagefolder_path / "val").rglob("*.jpg"))})
-                .assign(image_path=lambda df: df["image_path"].apply(lambda x: Path(x.parents[1].stem, x.parents[0].stem, x.name)))
-                .assign(label_synset=lambda df: df["image_path"].apply(lambda x: x.parent.stem))
-                .pipe(cls._get_dataset_df)
-            )
-        if not absolute_paths:
-            df["image_path"] = df["image_path"].apply(lambda x: Path(str(x).split('/')[-3:]))
-        return df
-
-    @classmethod
-    def _get_dataset_df(cls, df: pd.DataFrame):
-        synsets = sorted(df["label_synset"].unique())
-        return (
-            df.sort_values("label_synset")
-            .assign(label_idx=lambda df: df["label_synset"].apply(lambda x: synsets.index(x)))
-            .assign(label_str=lambda df: df["label_idx"].apply(lambda x: cls.class_names[x]))
-            .assign(split_on=lambda df: df["label_str"])
-            .reset_index(drop=True)
-        )
-
-    @classmethod
-    def get_index_df_from_hdf5(cls) -> pd.DataFrame:
-        """returns df stored in :imagenet/hdf5/imagenet.h5//index, raises OSError if h5 file is not found, and KeyError if key=index is not found in h5"""
-        return pd.read_hdf(fs.get_valid_file_err(cls.local, "hdf5", "imagenet.h5"), key="index", mode='r')  # type: ignore
-
-class ImagenetteETL:
-    local = Path.home() / "datasets" / "imagenette"
-    url = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz"
-    class_names = ("tench", "english_springer", "cassette_player", "chain_saw", "church", "french_horn", "garbage_truck", "gas_pump", "golf_ball", "parachute")
-    num_classes = len(class_names)
-    means = (0.485, 0.456, 0.406)
-    std_devs = (0.229, 0.224, 0.225)
-    default_config = DatasetConfig(
-        random_seed=42,
-        tabular_sampler_name="imagefolder_notest",
-        tabular_sampler_params=dict(
-            val_frac=0.1,
-            split_on="label_str"
-        ),
-        image_pre=T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True), T.Resize(224, antialias=True)]),
-        target_pre=T.Identity(),
-        train_aug=T.RandomHorizontalFlip(0.5),
-        eval_aug=T.Identity(),
-    )
-
-    @classmethod
-    def download(cls):
-        r"""download and save imagenette2.tgz to :imagenette/archives/"""
-        HTTPIO.download_url(cls.url, cls.local/"archives")
-
-    @classmethod
-    def transform_to_imagefolder(cls) -> None:
-        """extracts files from archive to :imagenette/imagefolder, raises OSError if :imagenette/archives/imagenette2.tgz not found"""
-
-        def move_tempfiles_to_imagefolder(split: Literal["train", "val"]):
-            for src_path in tqdm(list((temp_path / "imagenette2" / split).rglob("*.JPEG")), desc=f"{imagefolder_path / split}"):
-                dst_path = imagefolder_path / split / src_path.parent.stem / f"{src_path.stem}.jpg"
-                dst_path.parent.mkdir(exist_ok=True, parents=True)
-                shutil.move(src_path, dst_path)
-
-        imagefolder_path = fs.get_new_dir(cls.local, "imagefolder")
-        temp_path = fs.get_new_dir(cls.local, "temp")
-        with tarfile.open(fs.get_valid_file_err(cls.local, "archives", "imagenette2.tgz")) as tf:
-            tf.extractall(temp_path)
-        move_tempfiles_to_imagefolder("train")
-        move_tempfiles_to_imagefolder("val")
-        cls.get_index_df_from_imagefolder().to_hdf(imagefolder_path / "metadata.h5", key = "index", mode = 'a')
-        shutil.rmtree(temp_path)
-
-    @classmethod
-    def transform_to_hdf(cls) -> None:
-        """encodes files from imagefolder to :root/hdf5/imagenette.h5, raises OSError if imagenette/imagefolder/images is invalid"""
-        imagefolder_path = fs.get_valid_dir_err(cls.local, "imagefolder", empty_ok=False)
-        h5_path = fs.get_new_dir(cls.local, "hdf5") / "imagenette.h5"
-
-        df = cls.get_index_df_from_imagefolder(absolute_paths=False)
-        df.to_hdf(h5_path, key="index", mode="w")
-        with h5py.File(h5_path, mode="r+") as h5file:
-            images = h5file.create_dataset(name="images", shape=(len(df),), dtype=h5py.special_dtype(vlen=np.uint8))
-            for idx, row in tqdm(df.iterrows(), total=len(df)):
-                with open(imagefolder_path / row["image_path"], "rb") as image_file:
-                    images[idx] = np.frombuffer(image_file.read(), dtype=np.uint8)
-
-    @classmethod
-    def get_index_df_from_archive(cls) -> pd.DataFrame:
-        """generates and returns dataset_df from :imagenette/archive/imagenette2.tgz, raises OSError if archive is not found"""
-        archive = fs.get_valid_file_err(cls.local, "archives", "imagenette2.tgz")
-        with tarfile.open(archive) as a:
-            return pd.DataFrame({"image_path": [Path(p) for p in a.getnames() if p.endswith(".JPEG")]}).pipe(cls._get_dataset_df)
-
-    @classmethod
-    def get_index_df_from_imagefolder(cls, absolute_paths: bool = True) -> pd.DataFrame:
-        """returns df from :imagenette/imagefolder/metadata.h5//index, which is generated if not found. raises OSError if imagefolder dir is invalid"""
-        imagefolder_path = fs.get_valid_dir_err(cls.local, "imagefolder", empty_ok=False)
-        try:
-            df = pd.read_hdf(imagefolder_path / "metadata.h5", key = "index", mode = 'r')
-        except OSError:
-            df = pd.DataFrame({"image_path": list(imagefolder_path.rglob("*.jpg"))}).pipe(cls._get_dataset_df)
-        if not absolute_paths:
-            df["image_path"] = df["image_path"].apply(lambda x: Path(*str(x).split('/')[-3:]))
-        return df 
-
-    @classmethod
-    def get_index_df_from_hdf5(cls) -> pd.DataFrame:
-        """returns imagenette dataset_df stored in :imagenette/hdf5/imagenette.h5//index, raises OSError if h5 file is not found, and KeyError if df is not found in h5"""
-        return pd.read_hdf(fs.get_valid_file_err(cls.local, "hdf5", "imagenette.h5"), key="index", mode='r')  # type: ignore
-
-    @classmethod
-    def _get_dataset_df(cls, df: pd.DataFrame) -> pd.DataFrame:
-        class_synsets = sorted(df["image_path"].apply(lambda x: x.parent.stem).unique())
-        return (
-            df
-            .assign(label_str=lambda df: df["image_path"].apply(lambda x: x.parent.stem))
-            .assign(label_idx=lambda df: df["label_str"].apply(lambda x: class_synsets.index(x)))
-            .assign(label_str=lambda df: df["label_idx"].apply(lambda x: cls.class_names[x]))
-            .sort_values("label_str")
-            .reset_index(drop=True)
-        )
-
 class ImagenetImagefolderClassification(Dataset):
     name = "imagenet_imagefolder_classification"
-    class_names = ImagenetETL.class_names
-    num_classes = ImagenetETL.num_classes
+    class_names = ImagenetETL.imagenet_class_names
+    num_classes = len(ImagenetETL.imagenet_class_names)
     means = ImagenetETL.means
     std_devs = ImagenetETL.std_devs
     df_schema = pa.DataFrameSchema(
         {
             "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetETL.num_classes)))),
-            "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.class_names)),
-            "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
+            "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenet_class_names)),
         },
         index=pa.Index(int, unique=True),
     )
@@ -428,20 +545,20 @@ class ImagenetImagefolderClassification(Dataset):
         {
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int, unique=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
         },
         index=pa.Index(int, unique=True),
     )
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
-        self._root = fs.get_valid_dir_err(ImagenetETL.local, "imagefolder")
+        self._root = fs.get_valid_dir_err(ImagenetETL.local, "imagefolder", "imagenet_1k")
         self._split = self.get_valid_split_err(split)
         self._config = config or ImagenetETL.default_config
         logger.info(
             f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
         )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.get_index_df_from_imagefolder(True))
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenet_1k'))
+        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split, prefix_root=self._root)
 
     def __len__(self):
         return len(self._split_df)
@@ -472,19 +589,17 @@ class ImagenetImagefolderClassification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-
 class ImagenetHDF5Classification(Dataset):
     name = "imagenet_hdf5_classification"
-    class_names = ImagenetETL.class_names
-    num_classes = ImagenetETL.num_classes
+    class_names = ImagenetETL.imagenet_class_names
+    num_classes = len(ImagenetETL.imagenet_class_names)
     means = ImagenetETL.means
     std_devs = ImagenetETL.std_devs
     df_schema = pa.DataFrameSchema(
         {
             "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
             "label_str": pa.Column(str),
-            "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
         },
         index=pa.Index(int, unique=True),
     )
@@ -493,19 +608,19 @@ class ImagenetHDF5Classification(Dataset):
         {
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
         },
         index=pa.Index(int, unique=True),
     )
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
-        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenet.h5")
+        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenet_1k.h5")
         self._split = self.get_valid_split_err(split)
         self._config = config or ImagenetETL.default_config
         logger.info(
             f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
         )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.get_index_df_from_hdf5())
+        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenet_1k'))
         self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
 
     def __len__(self) -> int:
@@ -514,8 +629,7 @@ class ImagenetHDF5Classification(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
         idx_row = self.split_df.iloc[idx]
         with h5py.File(self.root, mode="r") as hdf5_file:
-            image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
-        image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
+            image = decode_jpeg(torch.tensor(hdf5_file["images"][idx_row["df_idx"]], dtype = torch.uint8), ImageReadMode.RGB)
         image = self._config.image_pre(image)
         if self._split in ("train", "trainvaltest"):
             image = self._config.train_aug(image)
@@ -539,17 +653,16 @@ class ImagenetHDF5Classification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-
 class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
     name = "imagenet_litdata_classification"
-    class_names = ImagenetETL.class_names
-    num_classes = ImagenetETL.num_classes
+    class_names = ImagenetETL.imagenet_class_names
+    num_classes = len(ImagenetETL.imagenet_class_names)
     means = ImagenetETL.means
     std_devs = ImagenetETL.std_devs
     df_schema = pa.DataFrameSchema(
         {
             "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
             "label_str": pa.Column(str),
             "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
         },
@@ -560,7 +673,7 @@ class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
         {
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
         },
         index=pa.Index(int, unique=True),
     )
@@ -599,18 +712,17 @@ class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-
 class ImagenetteImagefolderClassification(Dataset):
     name = "imagenette_imagefolder_classification"
-    class_names = ImagenetteETL.class_names
-    num_classes = ImagenetteETL.num_classes
-    means = ImagenetteETL.means
-    std_devs = ImagenetteETL.std_devs
+    class_names = ImagenetETL.imagenette_class_names
+    num_classes = len(ImagenetETL.imagenette_class_names)
+    means = ImagenetETL.means
+    std_devs = ImagenetETL.std_devs
     df_schema = pa.DataFrameSchema(
         {
             "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetteETL.num_classes)))),
-            "label_str": pa.Column(str, pa.Check.isin(ImagenetteETL.class_names)),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+            "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenette_class_names)),
             "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
         },
         index=pa.Index(int, unique=True),
@@ -620,19 +732,19 @@ class ImagenetteImagefolderClassification(Dataset):
         {
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int, unique=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetteETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
         },
         index=pa.Index(int, unique=True),
     )
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
-        self._root = fs.get_valid_dir_err(ImagenetteETL.local / "imagefolder")
+        self._root = fs.get_valid_dir_err(ImagenetETL.local / "imagefolder" / "imagenette")
         self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetteETL.default_config
+        self._config = config or ImagenetETL.default_config
         logger.info(
             f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
         )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetteETL.get_index_df_from_imagefolder())
+        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenette'))
         self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
 
     def __len__(self):
@@ -665,17 +777,16 @@ class ImagenetteImagefolderClassification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-
 class ImagenetteHDF5Classification(Dataset):
     name = "imagenette_hdf5_classification"
-    class_names = ImagenetteETL.class_names
-    num_classes = ImagenetteETL.num_classes
-    means = ImagenetteETL.means
-    std_devs = ImagenetteETL.std_devs
+    class_names = ImagenetETL.imagenette_class_names
+    num_classes = len(ImagenetETL.imagenette_class_names)
+    means = ImagenetETL.means
+    std_devs = ImagenetETL.std_devs
     df_schema = pa.DataFrameSchema(
         {
             "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetteETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
             "label_str": pa.Column(str),
             "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
         },
@@ -686,19 +797,19 @@ class ImagenetteHDF5Classification(Dataset):
         {
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetteETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
         },
         index=pa.Index(int, unique=True),
     )
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
-        self._root = fs.get_valid_file_err(ImagenetteETL.local, "hdf5", "imagenette.h5")
+        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
         self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetteETL.default_config
+        self._config = config or ImagenetETL.default_config
         logger.info(
             f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
         )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetteETL.get_index_df_from_hdf5())
+        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenette'))
         self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
 
     def __len__(self) -> int:
@@ -732,17 +843,16 @@ class ImagenetteHDF5Classification(Dataset):
     def split_df(self) -> pd.DataFrame:
         return self._split_df
 
-
 class ImagenetteInMemoryClassification(Dataset):
     name = "imagenette_inmemory_classification"
-    class_names = ImagenetteETL.class_names
-    num_classes = ImagenetteETL.num_classes
-    means = ImagenetteETL.means
-    std_devs = ImagenetteETL.std_devs
+    class_names = ImagenetETL.imagenette_class_names
+    num_classes = len(ImagenetETL.imagenette_class_names)
+    means = ImagenetETL.means
+    std_devs = ImagenetETL.std_devs
     df_schema = pa.DataFrameSchema(
         {
             "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetteETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
             "label_str": pa.Column(str),
             "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
         },
@@ -753,19 +863,19 @@ class ImagenetteInMemoryClassification(Dataset):
         {
             "image_path": pa.Column(str, coerce=True),
             "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, ImagenetteETL.num_classes)))),
+            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
         },
         index=pa.Index(int, unique=True),
     )
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
-        self._root = fs.get_valid_file_err(ImagenetteETL.local, "hdf5", "imagenette.h5")
+        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
         self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetteETL.default_config
+        self._config = config or ImagenetETL.default_config
         logger.info(
             f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
         )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetteETL.get_index_df_from_hdf5())
+        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagnette'))
         self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
 
         with h5py.File(self._root, mode="r") as f:

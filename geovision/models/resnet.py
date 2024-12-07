@@ -90,12 +90,11 @@ class ResNetFeatureExtractor(torch.nn.Module):
 
         if self.weights is not None:
             if isinstance(self.weights, torchvision.models.WeightsEnum):
-                invalid_keys = self.load_state_dict(self._rename_torch_weights(self.weights.get_state_dict()), strict = False)
+                self.load_state_dict(self._rename_torch_weights(self.weights.get_state_dict()), strict = False)
             elif isinstance(self.weights, Path):
-                invalid_keys = self.load_state_dict(torch.load(self.weights, weights_only=True), strict = False)
+                self.load_state_dict(torch.load(self.weights, weights_only=True), strict = False)
             else:
-                invalid_keys = self.load_state_dict(self._rename_torch_weights(torch.hub.load_state_dict_from_url(self.weights, weights_only=True), strict=False))
-            logger.log(invalid_keys)
+                self.load_state_dict(self._rename_torch_weights(torch.hub.load_state_dict_from_url(self.weights, weights_only=True), strict=False))
         else:
             # TODO: write kaiming init
             pass

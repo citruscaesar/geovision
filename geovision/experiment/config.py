@@ -94,14 +94,6 @@ class ExperimentConfig:
                     f"config error (invalid type), expected :wandb_init_params to be dict, got {type(wandb_init_params)}"
         self.log_params = log_params
 
-        # log_model_outputs = log_params.get("log_model_outputs" True)
-        # assert log_model_outputs is not None, "config error (missing value), expected :log_params to contain log_model_outputs(int)"
-        # assert isinstance(log_model_outputs, int), \
-            # f"config error (invalid value), expected :log_params[log_model_outputs] to be an int, got {type(log_model_outputs)}"
-        # assert log_model_outputs >= -1, \
-        #   "config error (invalid value), expected :log_params[log_model_outputs] to be 0 for no logging, -1 to log all outputs or any k < num_dataset_classes to log top_k"
-        # assert log_model_outputs <= self.dataset_constructor.num_classes
-
         if dataset_name is not None:
             assert isinstance(dataset_params, dict), f"config error (invalid type), expected :dataset_params to be dict, got {type(dataset_params)}"
             self.dataset_constructor = self._get_dataset_constructor(dataset_name)

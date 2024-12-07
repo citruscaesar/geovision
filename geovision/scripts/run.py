@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from lightning import Trainer
 from torchvision.transforms import v2 as T  # type: ignore
 from geovision.io.local import FileSystemIO as fs
+from lightning.pytorch.profilers import PyTorchProfiler
 from geovision.experiment.config import ExperimentConfig
 from geovision.data.interfaces import ImageDatasetDataModule
 from geovision.models.interfaces import ClassificationModule
@@ -15,7 +16,6 @@ if __name__ == "__main__":
     logging.basicConfig(
         filename = f"{fs.get_new_dir(config.experiments_dir, "logs")}/logfile.log",
         filemode = "a",
-        
         format = "%(asctime)s : %(name)s : %(levelname)s : %(message)s",
         level = logging.INFO
     )
@@ -42,7 +42,13 @@ if __name__ == "__main__":
         scheduler_config_params=config.scheduler_config_params
     )
 
-    trainer = Trainer(logger = loggers, callbacks = callbacks, **config.trainer_params)
+    profiler = PyTorchProfiler(
+        dirpath = config.ckpt_path / "logs", 
+        filename = "profiler",
+        export_to_chrome=True,
+    )
+
+    trainer = Trainer(logger = loggers, callbacks = callbacks, profiler = profiler, **config.trainer_params)
     if config.trainer_task == "fit":
         run = trainer.fit
     elif config.trainer_task == "validate":

@@ -4,7 +4,8 @@ random_seed: 42
 
 trainer_task: fit 
 trainer_params:
-  max_epochs: 20 
+  max_epochs: 5 
+  precision: 16 
   num_sanity_val_steps: 0
   enable_model_summary: True
 
@@ -15,8 +16,8 @@ log_params:
   wandb_init_params:
     tags: ["imagenette", "resnet50"]
     notes: "training from scratch" 
-  log_every_n_steps: 10 
-  log_every_n_epochs: 3 
+  log_every_n_steps: 10
+  log_every_n_epochs: 1
   log_models: True 
 
 dataset_name: imagenette_hdf5_classification 
@@ -72,7 +73,8 @@ model_params:
   encoder_name: resnet
   encoder_params:
     layers: 18 
-    weights: kaiming 
+    weights: torchvision 
+    weights_param: ResNet18_Weights.DEFAULT
   decoder_name: linear 
   decoder_params:
     in_features: 512 
@@ -82,17 +84,17 @@ criterion_name: cross_entropy
 criterion_params:
   reduction: mean
 
-optimizer_name: sgd 
+optimizer_name: sgd
 optimizer_params:
-  lr: 5.0e-3
+  lr: 5.0e-6
   momentum: 0.9
   weight_decay: 5.0e-4
 
-scheduler_name: linear_lr
-scheduler_params:
-  start_factor: 1.0 
-  end_factor: 0.001 
-  total_iters: 5
+# scheduler_name: linear_lr
+# scheduler_params:
+  # start_factor: 1.0 
+  # end_factor: 0.001 
+  # total_iters: 5
 
 # warmup_scheduler_name: linear_lr
 # warmup_scheduler_params:
@@ -101,7 +103,7 @@ scheduler_params:
   # total_iters: 200 
 #warmup_steps: 200 
 
-scheduler_config_params:
-  interval: epoch 
-  frequency: 3
+# scheduler_config_params:
+  # interval: epoch 
+  # frequency: 3
   #monitor: train_loss_epoch 
