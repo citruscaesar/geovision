@@ -149,22 +149,22 @@ class ClassificationLogger(Callback):
         self.train_metrics_step = self.metrics.clone(prefix = "train_", postfix = "_step")
         self.train_metrics_epoch = self.metrics.clone(prefix = "train_", postfix = "_epoch")
         self.train_confusion_matrix = self.confusion_matrix.clone()
-        # NOTE: in h5_run.add_metric_buffers, split and suffix are used to create the {split}_{suffix}_end integer, which marks the end of the {metric} buffer (which are dynamic arrays).
-        self.h5_run.add_metric_buffers(
-            metrics = list(self.train_metrics_step.keys()) + ["train_loss_step", "train_lr_step"], 
-            shape = self.train_steps_per_epoch // self.log_every_n_steps, 
-            dtype = np.float32
-        )
-        self.h5_run.add_metric_buffers(
-            metrics = list(self.train_metrics_epoch.keys()) + ["train_loss_epoch", "train_lr_epoch"], 
-            shape = 1, 
-            dtype = np.float32
-        )
-        self.h5_run.add_metric_buffers(
-            metrics = ["train_confusion_matrix_epoch"],
-            shape = (1, self.dataset.num_classes, self.dataset.num_classes),
-            dtype = np.uint64
-        )
+        if self.log_to_h5:
+            self.h5_run.add_metric_buffers(
+                metrics = list(self.train_metrics_step.keys()) + ["train_loss_step", "train_lr_step"], 
+                shape = self.train_steps_per_epoch // self.log_every_n_steps, 
+                dtype = np.float32
+            )
+            self.h5_run.add_metric_buffers(
+                metrics = list(self.train_metrics_epoch.keys()) + ["train_loss_epoch", "train_lr_epoch"], 
+                shape = 1, 
+                dtype = np.float32
+            )
+            self.h5_run.add_metric_buffers(
+                metrics = ["train_confusion_matrix_epoch"],
+                shape = (1, self.dataset.num_classes, self.dataset.num_classes),
+                dtype = np.uint64
+            )
 
     def on_train_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.train_step = 0
@@ -242,22 +242,22 @@ class ClassificationLogger(Callback):
         self.val_metrics_step = self.metrics.clone(prefix = "val_", postfix = "_step")
         self.val_metrics_epoch = self.metrics.clone(prefix = "val_", postfix = "_epoch")
         self.val_confusion_matrix = self.confusion_matrix.clone()
-        # NOTE: in h5_run.add_metric_buffers, split and suffix are used to create the {split}_{suffix}_end integer, which marks the end of the {metric} buffer (which are dynamic arrays).
-        self.h5_run.add_metric_buffers(
-            metrics = list(self.val_metrics_step.keys()) + ["val_loss_step"], 
-            shape = self.val_steps_per_epoch // self.log_every_n_steps,
-            dtype = np.float32
-        )
-        self.h5_run.add_metric_buffers(
-            metrics = list(self.val_metrics_epoch.keys()) + ["val_loss_epoch"],
-            shape = 1,
-            dtype = np.float32
-        )
-        self.h5_run.add_metric_buffers(
-            metrics = ["val_confusion_matrix_epoch"],
-            shape = (1, self.dataset.num_classes, self.dataset.num_classes),
-            dtype = np.int64
-        )
+        if self.log_to_h5:
+            self.h5_run.add_metric_buffers(
+                metrics = list(self.val_metrics_step.keys()) + ["val_loss_step"], 
+                shape = self.val_steps_per_epoch // self.log_every_n_steps,
+                dtype = np.float32
+            )
+            self.h5_run.add_metric_buffers(
+                metrics = list(self.val_metrics_epoch.keys()) + ["val_loss_epoch"],
+                shape = 1,
+                dtype = np.float32
+            )
+            self.h5_run.add_metric_buffers(
+                metrics = ["val_confusion_matrix_epoch"],
+                shape = (1, self.dataset.num_classes, self.dataset.num_classes),
+                dtype = np.int64
+            )
 
     def on_validation_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.val_step = 0

@@ -19,36 +19,32 @@ from tqdm import tqdm
 from io import BytesIO  #
 from pathlib import Path
 from itertools import chain
+from litdata import optimize
 from skimage.transform import resize
 from torchvision.io import read_image, decode_jpeg, ImageReadMode
 from multiprocessing import Pool, cpu_count
 
+from geovision.data import Dataset, DatasetConfig
 from geovision.io.remote import HTTPIO
 from geovision.io.local import FileSystemIO as fs
-from geovision.data.interfaces import Dataset, DatasetConfig
+#from geovision.data.interfaces import Dataset, DatasetConfig
 
 import logging
 logger = logging.getLogger(__name__)
 
-# Analyize ImageNet SynSets first, then create sensible subsets
-# Download ImageNet-22k SynSets from HuggingFace
-# 1. ImageNet-1k, ImageNet-100, ImageNet-10 (Imagenette), TinyImageNet (64x64)
-
-
-# Upload The ImageNet Archive to Contabo -> Download onto the Networked Storage -> Experient with Different Options (ImageFolder / HDF / InMemory etc.) for the fastest batch time
-# 1. Imagenet Archive -> Metadata
-# 2. Find Corrupted Images and save to Archive Metadata
-# 3. Transform(to: HDF / ImageFolder, src: [ilvrc_archive, imagenette_archive], subset: [1000 (ILSVRC-2012), 100 (Custom WordNet), 10 (Imagenette)], image_transforms: Resize(256), df_transforms: Subset, FilterShit, ShuffleTrain, encode_to_jpg: bool = True)
-#   -> chunk_size=256 if to=HDF along the first dimension
-#   -> df_transforms will be responsible for applying the filtering and subsetting operations (explicitly), it will call cls.load if needed
-#   -> 
-# 4. Load(table: index, corrupt, synsets, src: Archive, HDF5, Imagefolder, subset: "ilsvrc_2012", "imagenette")
-
+# TODO:
+# 1. find and download multilabel version for imagenet_1k
+# 2. find and write the improved labels for imagenet_1k, imagenet_v2/v3
+# 1. wordnet: dict[synset, list[class_name hierarchy]] for all 1000 classes, hardcoded into this file 
+#   -> use to create 100 class multiclass classification subset
+# 2. conceptualize, document and complete writing the extract, download, transform and load functions 
 
 class ImagenetETL:
     local = Path.home() / "datasets" / "imagenet"
+
     # fmt: off
-    imagenet_class_names =  ("tench", "goldfish", "great white shark", "tiger shark", "hammerhead shark", "electric ray", "stingray", "cock",
+    imagenet_class_names =  (
+        "tench", "goldfish", "great white shark", "tiger shark", "hammerhead shark", "electric ray", "stingray", "cock",
         "hen", "ostrich", "brambling", "goldfinch", "house finch", "junco", "indigo bunting", "American robin", "bulbul", "jay",
         "magpie", "chickadee", "American dipper", "kite", "bald eagle", "vulture", "great grey owl", "fire salamander", "smooth newt",
         "newt", "spotted salamander", "axolotl", "American bullfrog", "tree frog", "tailed frog", "loggerhead sea turtle",
@@ -159,9 +155,11 @@ class ImagenetETL:
         "bridegroom", "scuba diver", "rapeseed", "daisy", "yellow lady's slipper", "corn", "acorn", "rose hip", "horse chestnut seed", "coral fungus", 
         "agaric", "gyromitra", "stinkhorn mushroom", "earth star", "hen-of-the-woods", "bolete", "ear of corn", "toilet paper"
     )
-    imagenette_class_names = (
+
+    imagenette_class_names = ( 
         "tench", "english_springer", "cassette_player", "chain_saw", "church", "french_horn", "garbage_truck", "gas_pump", "golf_ball", "parachute"
     )
+
     warning_idxs = (
         14447, 55541, 59005, 82043, 109039, 132926, 147946, 148200, 148461, 149091, 149075, 149075, 149091, 149150, 149157, 149175, 149179, 149210, 161793,
         164725, 170021, 170122, 197088, 251657, 258309, 314614, 389572, 426998, 434647, 455142, 456227, 476489, 498503, 499108, 499266, 507884, 526417,
@@ -169,14 +167,13 @@ class ImagenetETL:
         888236, 897070, 943737, 1036821, 1038877, 1042938, 1067042, 1095673, 1139200, 1190161, 1290684, 1312510, 1318704, 1319836 
     )
     # fmt: on
+
     means = (0.485, 0.456, 0.406)
     std_devs = (0.229, 0.224, 0.225)
-    default_config = DatasetConfig(
+    imagenet_default_config = DatasetConfig(
         random_seed=42,
         tabular_sampler_name="imagefolder_notest",
-        tabular_sampler_params=dict(
-            val_frac=0.05,
-        ),
+        tabular_sampler_params={"val_frac": 0.05},
         image_pre=T.Compose([
             T.ToImage(),
             T.ToDtype(torch.float32, scale=True),
@@ -203,6 +200,10 @@ class ImagenetETL:
             assert src in ("fastai", )
             if src == "fastai":
                 HTTPIO.download_url("https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz", cls.local / "staging")
+
+    @classmethod
+    def download(cls, subset: Literal["imagenet_1k", "imagenet_100", "imagenette"]):
+        assert subset in ("imagenet_1k", "imagenet_100", "imagenette") 
 
     @classmethod
     def load(
@@ -320,10 +321,12 @@ class ImagenetETL:
         resize_to: int = 0, 
         jpg_quality: int = 95,
         chunks: int = 0,
+        num_parts: int = 15,
+        num_proc: Optional[int] = None,
         val_only: bool = False,
         **kwargs
     ):
-        assert to in ("hdf5", "imagefolder")
+        assert to in ("hdf5", "imagefolder", "litdata")
         assert subset in ("imagenet_1k", "imagenette")
         if subset == "imagenet_1k":
             archive_path = cls.local / "staging" / "imagenet-object-localization-challenge.zip"
@@ -377,8 +380,8 @@ class ImagenetETL:
                     shutil.copy(row["temp_path"], row["image_path"])
 
                 # move test
-                for temp_path in tqdm(list((temp_path / "ILSVRC" / "Data" / "CLS-LOC" / "test").rglob("*.JPEG")), desc=f"{imagefolder_path / "test"}"):
-                    shutil.copy(temp_path, test_dir / f"{temp_path.stem}.jpg")
+                for temp_path in tqdm(list((temp_path/"ILSVRC"/"Data"/"CLS-LOC"/"test").rglob("*.JPEG")), desc=f"{imagefolder_path / "test"}"):
+                    shutil.copy(temp_path, test_dir/f"{temp_path.stem}.jpg")
 
                 # cleanup
                 shutil.rmtree(temp_path)
@@ -388,8 +391,9 @@ class ImagenetETL:
                 assert resize_to >= 0 
                 assert jpg_quality >= 0 and jpg_quality <= 95 
                 assert chunks >= 0
+                assert num_parts >= 1
 
-                hdf5_path = fs.get_new_dir(cls.local, "hdf5") / "imagenet.h5"
+                hdf5_path = fs.get_new_dir(cls.local, "hdf5") / "imagenet_1k.h5"
                 df = cls.load('index', 'archive', subset)#.assign(image_path = lambda df: df["image_path"].apply(lambda x: x.as_posix()))
 
                 if df_transform is not None:
@@ -402,40 +406,58 @@ class ImagenetETL:
                         raise AssertionError("expected :df_transform to be a fn: df -> df, or a list of such fn")
  
                 if val_only:
-                    hdf5_path = hdf5_path.parent / "imagenet_val.h5"
+                    num_parts = 1
+                    hdf5_path = hdf5_path.parent / "imagenet_1k_val.h5"
                     df = df.loc[lambda df: df["image_path"].apply(lambda x: "val" in x)]
+
+                if num_parts == 1:                
                     cls._write_to_hdf(df, archive_path, hdf5_path, resize_to, jpg_quality, chunks)
 
                 else:
                     args = list()
-                    for i, indices in enumerate(np.array_split(df.index, 15)):
-                        args.append((df.iloc[indices], archive_path, hdf5_path.parent / f"{hdf5_path.stem}_part={i}.h5", resize_to, jpg_quality, chunks))
-
-                    with Pool(cpu_count() - 1) as pool:
+                    for i, idxs in enumerate(np.array_split(df.index, num_parts)):
+                        args.append((df.iloc[idxs], archive_path, hdf5_path.parent/f"{hdf5_path.stem}_part={i}.h5", resize_to, jpg_quality, chunks))
+                    
+                    num_proc = num_proc or cpu_count() - 1
+                    with Pool(num_proc) as pool:
                         pool.starmap(cls._write_to_hdf, args)
 
-                    df.to_hdf(hdf5_path, mode = 'w', key = "index")
-                    with h5py.File(hdf5_path, mode='r+') as f:
+                    with h5py.File(hdf5_path, mode='w') as f:
                         vlen_dtype = h5py.special_dtype(vlen = np.uint8)
                         layout = h5py.VirtualLayout(shape = len(df), dtype = vlen_dtype)
-                        for idx, (vds_path, vds_df) in enumerate(args):
+                        for idx, args in enumerate(args):
+                            vds_df, vds_path = args[0], args[2]
                             layout[idx*len(vds_df): (idx+1)*len(vds_df)] = h5py.VirtualSource(vds_path, "images", len(df), vlen_dtype)
                         f.create_virtual_dataset("images", layout)
+
+                    df["image_path"] = df["image_path"].apply(lambda x: '/'.join(x.split('/')[-3:]))
+                    df.to_hdf(hdf5_path, mode = 'r+', key = "index")
+            
+            elif to == "litdata":
+                df = cls.load('index', 'archive', subset).iloc[:10000]
+                optimize(
+                    fn=cls._write_to_litdata,
+                    inputs=[(idx, row, archive_path, resize_to, jpg_quality) for idx, row in df.iterrows()],
+                    output_dir=str(fs.get_new_dir(cls.local / "litdata")),
+                    chunk_bytes="512MB",
+                    num_workers=num_proc
+                )
 
         elif subset == "imagenette":
             archive_path = fs.get_valid_file_err(cls.local, "staging", "imagenette2.tgz")
 
             if to == "imagefolder":
+                imagefolder_path = fs.get_new_dir(cls.local, "imagefolder")
+                temp_path = fs.get_new_dir(cls.local, "temp")
+                with tarfile.open(archive_path) as tf:
+                    tf.extractall(temp_path)
+
                 def move_tempfiles_to_imagefolder(split: Literal["train", "val"]):
                     for src_path in tqdm(list((temp_path / "imagenette2" / split).rglob("*.JPEG")), desc=f"{imagefolder_path / split}"):
                         dst_path = imagefolder_path / split / src_path.parent.stem / f"{src_path.stem}.jpg"
                         dst_path.parent.mkdir(exist_ok=True, parents=True)
                         shutil.move(src_path, dst_path)
 
-                imagefolder_path = fs.get_new_dir(cls.local, "imagefolder")
-                temp_path = fs.get_new_dir(cls.local, "temp")
-                with tarfile.open(archive_path) as tf:
-                    tf.extractall(temp_path)
                 move_tempfiles_to_imagefolder("train")
                 move_tempfiles_to_imagefolder("val")
                 shutil.rmtree(temp_path)
@@ -467,16 +489,29 @@ class ImagenetETL:
         df["image_path"] = df["image_path"].apply(lambda x: x.split('/')[-3:])
         df.to_hdf(ds_path, key = "index", mode = 'r+')
 
+    @classmethod
+    def _write_to_litdata(cls, args: tuple[int, pd.Series, Path, int, int]):
+    #def _write_to_litdata(cls, row: pd.Series, zf: zipfile.ZipFile, resize_to: int, jpg_quality: int):
+        idx, row, archive_path, resize_to, jpg_quality = args
+        return {
+            "image": cls._write_to_jpg(iio.imread(archive_path/row["image_path"]), resize_to, jpg_quality),
+            "label_idx": row["label_idx"],
+            "df_idx": idx 
+        }
+
     @staticmethod
     def _write_to_jpg(image: NDArray, resize_to:int, jpg_quality: int) -> NDArray:
         if resize_to:
             image = resize(image, (resize_to, resize_to), preserve_range=True, anti_aliasing=True).astype(np.uint8)
-        if image.ndim < 3:
+        if image.ndim == 2: # greyscale images -> repeat greyscale image across channels
             image = np.stack((image,)*3, axis = -1)
+        elif image.shape[-1] == 4: # rgba images -> remove alpha (transparency) channel
+            image = image[:, :, :3]
         return np.frombuffer(iio.imwrite("<bytes>", image, extension=".jpg", quality = jpg_quality), dtype = np.uint8)
 
+    
     @staticmethod
-    def _list_corrupted_images(df: pd.DataFrame, archive_path: Path):
+    def _list_corrupt_images(df: pd.DataFrame, archive_path: Path):
         corrupted = list()
         with zipfile.ZipFile(archive_path) as zf:
             for idx, row in tqdm(df.iterrows(), total = len(df)):
@@ -493,13 +528,14 @@ class ImagenetETL:
         return corrupted
     
     @classmethod
-    def find_corrupted_images(cls) -> pd.DataFrame:
+    def get_corrupt_images_df(cls) -> pd.DataFrame:
         archive_path = cls.local / "staging" / "imagenet-object-localization-challenge.zip"
         df = cls.load(table = 'index', src = 'archive', subset = 'imagenet_1k')
 
+        # TODO: setup logging and write warnings/errors to a file instead of stdout and memory
         warnings.filterwarnings('error')
         with Pool(cpu_count()-1) as pool:
-            sus_idxs = pool.starmap(cls._list_corrupted_images, [(df.loc[idxs], archive_path) for idxs in np.array_split(df.index, cpu_count()-1)])
+            sus_idxs = pool.starmap(cls._list_corrupt_images, [(df.loc[idxs], archive_path) for idxs in np.array_split(df.index, cpu_count()-1)])
         warnings.resetwarnings()
 
         idxs = list() 
@@ -511,13 +547,13 @@ class ImagenetETL:
         return df
 
     @classmethod
-    def filter_corrupted_images(cls, df: pd.DataFrame) -> pd.DataFrame:
-        return df.drop(index=cls.load(table = 'corrupt', src = 'archive', subset = 'imagenet_1k'))
+    def filter_corrupt_images(cls, df: pd.DataFrame) -> pd.DataFrame:
+        return df.drop(index=cls.load(table = 'corrupt', src = 'archive', subset = 'imagenet_1k').index)
 
     @classmethod
     def get_dataset_df_from_litdata(cls, config: Optional[DatasetConfig] = None, schema: Optional[pa.DataFrameSchema] = None) -> pd.DataFrame:
         try:
-            return pd.read_csv(cls.local / "litdata" / "dataset.csv")
+            return pd.read_csv(cls.local/"litdata"/"dataset.csv")
         except OSError:
             if config is None:
                 raise ValueError("since dataset df not found at :imagenet/litdata, config cannot be none")
@@ -526,109 +562,82 @@ class ImagenetETL:
             )
             # NOTE: don't save df to litdata dir here, it is saved by worker 0 in the litdata encoder script
 
-class ImagenetImagefolderClassification(Dataset):
-    name = "imagenet_imagefolder_classification"
-    class_names = ImagenetETL.imagenet_class_names
-    num_classes = len(ImagenetETL.imagenet_class_names)
-    means = ImagenetETL.means
-    std_devs = ImagenetETL.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
-            "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenet_class_names)),
-        },
-        index=pa.Index(int, unique=True),
-    )
+Imagenet1KIndexSchema = pa.DataFrameSchema(
+    columns={
+        "image_path": pa.Column(str, coerce=True),
+        "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, 1000)))),
+        # TODO:
+        # check label synset is in wordnet 
+        # check label str is one of the correct corresponding classnames
+        # "label_synset": pa.Column(str, pa.Check.isin(ImagenetETL.wordnet.keys())),
+        "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenet_class_names)),
+        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))
+    }, 
+    index=pa.Index(int, unique=True),
+)
 
-    split_df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "df_idx": pa.Column(int, unique=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
-        },
-        index=pa.Index(int, unique=True),
-    )
+ImagenetteIndexSchema = pa.DataFrameSchema(
+    columns={
+        "image_path": pa.Column(str, coerce=True),
+        "label_idx": pa.Column(int, pa.Check.isin(range(0, 10))),
+        "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenette_class_names)),
+        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))
+    }, 
+    index=pa.Index(int, unique=True),
+)
+
+class ImagenetImagefolderClassification(Dataset):
+    name = "imagenet_1k"
+    task = "classification"
+    subtask = "multiclass"
+    storage = "imagefolder"
+    class_names = ImagenetETL.imagenet_class_names
+    num_classes = 1000 
+    root = ImagenetETL.local/"imagefolder"/"imagenet_1k"
+    schema = Imagenet1KIndexSchema
+    config = ImagenetETL.imagenet_default_config
+    loader = ImagenetETL.load
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
-        self._root = fs.get_valid_dir_err(ImagenetETL.local, "imagefolder", "imagenet_1k")
-        self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetETL.default_config
-        logger.info(
-            f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenet_1k'))
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split, prefix_root=self._root)
-
+        super().__init__(split, config)
+        self.df = self.get_df(split, prefix_root_to_paths=True)
+        
     def __len__(self):
-        return len(self._split_df)
+        return len(self.df)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        idx_row = self._split_df.iloc[idx]
+        idx_row = self.df.iloc[idx]
         image = read_image(idx_row["image_path"], mode=ImageReadMode.RGB)
-        image = self._config.image_pre(image)
-        if self._split in ("train", "trainvaltest"):
-            image = self._config.train_aug(image)
-        elif self._split in ("val", "test"):
-            image = self._config.eval_aug(image)
+        image = self.config.image_pre(image)
+        if self.split in ("train", "trainvaltest"):
+            image = self.config.train_aug(image)
+        elif self.split in ("val", "test"):
+            image = self.config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
 
-    @property
-    def root(self):
-        return self._root
-
-    @property
-    def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        return self._split
-
-    @property
-    def df(self) -> pd.DataFrame:
-        return self._df
-
-    @property
-    def split_df(self) -> pd.DataFrame:
-        return self._split_df
-
 class ImagenetHDF5Classification(Dataset):
-    name = "imagenet_hdf5_classification"
+    name = "imagenet_1k"
+    task = "classification"
+    subtask = "multiclass"
+    storage = "hdf5"
     class_names = ImagenetETL.imagenet_class_names
-    num_classes = len(ImagenetETL.imagenet_class_names)
-    means = ImagenetETL.means
-    std_devs = ImagenetETL.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
-            "label_str": pa.Column(str),
-        },
-        index=pa.Index(int, unique=True),
-    )
-
-    split_df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
-        },
-        index=pa.Index(int, unique=True),
-    )
+    num_classes = 1000 
+    root = ImagenetETL.local/"hdf5"/"imagenet_1k.h5"
+    schema = Imagenet1KIndexSchema
+    config = ImagenetETL.imagenet_default_config
+    loader = ImagenetETL.load
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
-        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenet_1k.h5")
-        self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetETL.default_config
-        logger.info(
-            f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenet_1k'))
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
-
-    def __len__(self) -> int:
-        return len(self._split_df)
+        super().__init__(split, config)
+        self.df = self.get_df(split, prefix_root_to_paths=False)
+        
+    def __len__(self):
+        return len(self.df)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        idx_row = self.split_df.iloc[idx]
+        idx_row = self.df.iloc[idx]
         with h5py.File(self.root, mode="r") as hdf5_file:
+            # image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
             image = decode_jpeg(torch.tensor(hdf5_file["images"][idx_row["df_idx"]], dtype = torch.uint8), ImageReadMode.RGB)
         image = self._config.image_pre(image)
         if self._split in ("train", "trainvaltest"):
@@ -637,276 +646,320 @@ class ImagenetHDF5Classification(Dataset):
             image = self._config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
 
-    @property
-    def root(self):
-        return self._root
-
-    @property
-    def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        return self._split
-
-    @property
-    def df(self) -> pd.DataFrame:
-        return self._df
-
-    @property
-    def split_df(self) -> pd.DataFrame:
-        return self._split_df
-
-class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
-    name = "imagenet_litdata_classification"
-    class_names = ImagenetETL.imagenet_class_names
-    num_classes = len(ImagenetETL.imagenet_class_names)
-    means = ImagenetETL.means
-    std_devs = ImagenetETL.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
-            "label_str": pa.Column(str),
-            "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
-        },
-        index=pa.Index(int, unique=True),
-    )
-
-    split_df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
-        },
-        index=pa.Index(int, unique=True),
-    )
-
-    def __init__(self, split: Literal["train", "val", "test"] = "train", config: Optional[DatasetConfig] = None):
-        assert split in ("train", "val", "test"), f"invalid :split, got {split}"
-        self._root = fs.get_valid_dir_err(ImagenetETL.local, "litdata", split)
-        self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetETL.default_config
-        self._df = self.df_schema(ImagenetETL.get_dataset_df_from_litdata())
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
-        super().__init__(input_dir=str(self._root), shuffle=True if split == "train" else False, drop_last=False, seed=config.random_seed, max_cache_size="200GB")
-
-    def __getitem__(self, idx: int):
-        data = super().__getitem__(idx)
-        image = self._config.image_pre(data["image"])
-        if self.split in ("train", "trainvaltest"):
-            image = self._config.train_aug(image)
-        elif self._split in ("val", "test"):
-            image = self._config.eval_aug(image)
-        return image, data["label_idx"], data["df_idx"]
-
-    @property
-    def root(self):
-        return self._root
-
-    @property
-    def split(self) -> Literal["train", "val", "test"]:
-        return self._split
-
-    @property
-    def df(self) -> pd.DataFrame:
-        return self._df
-
-    @property
-    def split_df(self) -> pd.DataFrame:
-        return self._split_df
-
 class ImagenetteImagefolderClassification(Dataset):
-    name = "imagenette_imagefolder_classification"
+    name = "imagenette"
+    task = "classification"
+    subtask = "multiclass"
+    storage = "imagefolder"
     class_names = ImagenetETL.imagenette_class_names
-    num_classes = len(ImagenetETL.imagenette_class_names)
-    means = ImagenetETL.means
-    std_devs = ImagenetETL.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
-            "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenette_class_names)),
-            "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
-        },
-        index=pa.Index(int, unique=True),
-    )
+    num_classes = 10 
+    root = ImagenetETL.local/"imagefolder"/"imagenette"
+    schema = ImagenetteIndexSchema
+    config = ImagenetETL.imagenet_default_config
+    loader = ImagenetETL.load
 
-    split_df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "df_idx": pa.Column(int, unique=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
-        },
-        index=pa.Index(int, unique=True),
-    )
-
-    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
-        self._root = fs.get_valid_dir_err(ImagenetETL.local / "imagefolder" / "imagenette")
-        self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetETL.default_config
-        logger.info(
-            f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenette'))
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
-
+    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
+        super().__init__(split, config)
+        self.df = self.get_df(split, prefix_root_to_paths=True)
+        
     def __len__(self):
-        return len(self._split_df)
+        return len(self.df)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        idx_row = self._split_df.iloc[idx]
-        image = iio.imread(idx_row["image_path"], format_hint=".jpg").squeeze()
-        image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
-        image = self._config.image_pre(image)
+        idx_row = self.df.iloc[idx]
+        image = read_image(idx_row["image_path"], mode=ImageReadMode.RGB)
+        image = self.config.image_pre(image)
         if self.split in ("train", "trainvaltest"):
-            image = self._config.train_aug(image)
-        elif self._split in ("val", "test"):
-            image = self._config.eval_aug(image)
+            image = self.config.train_aug(image)
+        elif self.split in ("val", "test"):
+            image = self.config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
-
-    @property
-    def root(self):
-        return self._root
-
-    @property
-    def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        return self._split
-
-    @property
-    def df(self) -> pd.DataFrame:
-        return self._df
-
-    @property
-    def split_df(self) -> pd.DataFrame:
-        return self._split_df
 
 class ImagenetteHDF5Classification(Dataset):
-    name = "imagenette_hdf5_classification"
+    name = "imagenette"
+    task = "classification"
+    subtask = "multiclass"
+    storage = "hdf5"
     class_names = ImagenetETL.imagenette_class_names
-    num_classes = len(ImagenetETL.imagenette_class_names)
-    means = ImagenetETL.means
-    std_devs = ImagenetETL.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
-            "label_str": pa.Column(str),
-            "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
-        },
-        index=pa.Index(int, unique=True),
-    )
+    num_classes = 10
+    root = ImagenetETL.local/"hdf5"/"imagenette.h5"
+    schema = ImagenetteIndexSchema
+    config = ImagenetETL.imagenet_default_config
+    loader = ImagenetETL.load
 
-    split_df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
-        },
-        index=pa.Index(int, unique=True),
-    )
-
-    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
-        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
-        self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetETL.default_config
-        logger.info(
-            f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenette'))
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
-
-    def __len__(self) -> int:
-        return len(self._split_df)
+    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
+        super().__init__(split, config)
+        self.df = self.get_df(split, prefix_root_to_paths=False)
+        
+    def __len__(self):
+        return len(self.df)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        idx_row = self._split_df.iloc[idx]
-        with h5py.File(self._root, mode="r") as hdf5_file:
+        idx_row = self.df.iloc[idx]
+        with h5py.File(self.root, mode="r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
-        image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
+            #image = decode_jpeg(torch.tensor(hdf5_file["images"][idx_row["df_idx"]], dtype = torch.uint8), ImageReadMode.RGB)
         image = self._config.image_pre(image)
-        if self.split in ("train", "trainvaltest"):
+        if self._split in ("train", "trainvaltest"):
             image = self._config.train_aug(image)
         elif self._split in ("val", "test"):
             image = self._config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
 
-    @property
-    def root(self):
-        return self._root
+# class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
+    # name = "imagenet_litdata_classification"
+    # class_names = ImagenetETL.imagenet_class_names
+    # num_classes = len(ImagenetETL.imagenet_class_names)
+    # means = ImagenetETL.means
+    # std_devs = ImagenetETL.std_devs
+    # df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
+            # "label_str": pa.Column(str),
+            # "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
 
-    @property
-    def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        return self._split
+    # split_df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "df_idx": pa.Column(int),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenet_class_names))))),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
 
-    @property
-    def df(self) -> pd.DataFrame:
-        return self._df
+    # def __init__(self, split: Literal["train", "val", "test"] = "train", config: Optional[DatasetConfig] = None):
+        # assert split in ("train", "val", "test"), f"invalid :split, got {split}"
+        # self._root = fs.get_valid_dir_err(ImagenetETL.local, "litdata", split)
+        # self._split = self.get_valid_split_err(split)
+        # self._config = config or ImagenetETL.default_config
+        # self._df = self.df_schema(ImagenetETL.get_dataset_df_from_litdata())
+        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+        # super().__init__(input_dir=str(self._root), shuffle=True if split == "train" else False, drop_last=False, seed=config.random_seed, max_cache_size="200GB")
 
-    @property
-    def split_df(self) -> pd.DataFrame:
-        return self._split_df
+    # def __getitem__(self, idx: int):
+        # data = super().__getitem__(idx)
+        # image = self._config.image_pre(data["image"])
+        # if self.split in ("train", "trainvaltest"):
+            # image = self._config.train_aug(image)
+        # elif self._split in ("val", "test"):
+            # image = self._config.eval_aug(image)
+        # return image, data["label_idx"], data["df_idx"]
 
-class ImagenetteInMemoryClassification(Dataset):
-    name = "imagenette_inmemory_classification"
-    class_names = ImagenetETL.imagenette_class_names
-    num_classes = len(ImagenetETL.imagenette_class_names)
-    means = ImagenetETL.means
-    std_devs = ImagenetETL.std_devs
-    df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
-            "label_str": pa.Column(str),
-            "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
-        },
-        index=pa.Index(int, unique=True),
-    )
+    # @property
+    # def root(self):
+        # return self._root
 
-    split_df_schema = pa.DataFrameSchema(
-        {
-            "image_path": pa.Column(str, coerce=True),
-            "df_idx": pa.Column(int),
-            "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
-        },
-        index=pa.Index(int, unique=True),
-    )
+    # @property
+    # def split(self) -> Literal["train", "val", "test"]:
+        # return self._split
 
-    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
-        self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
-        self._split = self.get_valid_split_err(split)
-        self._config = config or ImagenetETL.default_config
-        logger.info(
-            f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
-        )
-        self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagnette'))
-        self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+    # @property
+    # def df(self) -> pd.DataFrame:
+        # return self._df
 
-        with h5py.File(self._root, mode="r") as f:
-            self._images = f["images"][:]
+    # @property
+    # def split_df(self) -> pd.DataFrame:
+        # return self._split_df
 
-    def __len__(self):
-        return len(self._split_df)
+# class ImagenetteImagefolderClassification(Dataset):
+    # name = "imagenette_imagefolder_classification"
+    # class_names = ImagenetETL.imagenette_class_names
+    # num_classes = len(ImagenetETL.imagenette_class_names)
+    # means = ImagenetETL.means
+    # std_devs = ImagenetETL.std_devs
+    # df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+            # "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenette_class_names)),
+            # "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
 
-    def __getitem__(self, idx: int):
-        idx_row = self._split_df.iloc[idx]
-        image = iio.imread(BytesIO(self._images[idx_row["df_idx"]]))
-        image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
-        image = self._config.image_pre(image)
-        if self.split in ("train", "trainvaltest"):
-            image = self._config.train_aug(image)
-        elif self._split in ("val", "test"):
-            image = self._config.eval_aug(image)
-        return image, idx_row["label_idx"], idx_row["df_idx"]
+    # split_df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "df_idx": pa.Column(int, unique=True),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
 
-    @property
-    def root(self):
-        return self._root
+    # def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
+        # self._root = fs.get_valid_dir_err(ImagenetETL.local / "imagefolder" / "imagenette")
+        # self._split = self.get_valid_split_err(split)
+        # self._config = config or ImagenetETL.default_config
+        # logger.info(
+            # f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
+        # )
+        # self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenette'))
+        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
 
-    @property
-    def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        return self._split
+    # def __len__(self):
+        # return len(self._split_df)
 
-    @property
-    def df(self) -> pd.DataFrame:
-        return self._df
+    # def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
+        # idx_row = self._split_df.iloc[idx]
+        # image = iio.imread(idx_row["image_path"], format_hint=".jpg").squeeze()
+        # image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
+        # image = self._config.image_pre(image)
+        # if self.split in ("train", "trainvaltest"):
+            # image = self._config.train_aug(image)
+        # elif self._split in ("val", "test"):
+            # image = self._config.eval_aug(image)
+        # return image, idx_row["label_idx"], idx_row["df_idx"]
 
-    @property
-    def split_df(self) -> pd.DataFrame:
-        return self._split_df
+    # @property
+    # def root(self):
+        # return self._root
+
+    # @property
+    # def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
+        # return self._split
+
+    # @property
+    # def df(self) -> pd.DataFrame:
+        # return self._df
+
+    # @property
+    # def split_df(self) -> pd.DataFrame:
+        # return self._split_df
+
+# class ImagenetteHDF5Classification(Dataset):
+    # name = "imagenette_hdf5_classification"
+    # class_names = ImagenetETL.imagenette_class_names
+    # num_classes = len(ImagenetETL.imagenette_class_names)
+    # means = ImagenetETL.means
+    # std_devs = ImagenetETL.std_devs
+    # df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+            # "label_str": pa.Column(str),
+            # "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
+
+    # split_df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "df_idx": pa.Column(int),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
+
+    # def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
+        # self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
+        # self._split = self.get_valid_split_err(split)
+        # self._config = config or ImagenetETL.default_config
+        # logger.info(
+            # f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
+        # )
+        # self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenette'))
+        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+
+    # def __len__(self) -> int:
+        # return len(self._split_df)
+
+    # def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
+        # idx_row = self._split_df.iloc[idx]
+        # with h5py.File(self._root, mode="r") as hdf5_file:
+            # image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
+        # image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
+        # image = self._config.image_pre(image)
+        # if self.split in ("train", "trainvaltest"):
+            # image = self._config.train_aug(image)
+        # elif self._split in ("val", "test"):
+            # image = self._config.eval_aug(image)
+        # return image, idx_row["label_idx"], idx_row["df_idx"]
+
+    # @property
+    # def root(self):
+        # return self._root
+
+    # @property
+    # def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
+        # return self._split
+
+    # @property
+    # def df(self) -> pd.DataFrame:
+        # return self._df
+
+    # @property
+    # def split_df(self) -> pd.DataFrame:
+        # return self._split_df
+
+# class ImagenetteInMemoryClassification(Dataset):
+    # name = "imagenette_inmemory_classification"
+    # class_names = ImagenetETL.imagenette_class_names
+    # num_classes = len(ImagenetETL.imagenette_class_names)
+    # means = ImagenetETL.means
+    # std_devs = ImagenetETL.std_devs
+    # df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+            # "label_str": pa.Column(str),
+            # "split": pa.Column(str, pa.Check.isin(Dataset.splits)),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
+
+    # split_df_schema = pa.DataFrameSchema(
+        # {
+            # "image_path": pa.Column(str, coerce=True),
+            # "df_idx": pa.Column(int),
+            # "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, len(ImagenetETL.imagenette_class_names))))),
+        # },
+        # index=pa.Index(int, unique=True),
+    # )
+
+    # def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
+        # self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
+        # self._split = self.get_valid_split_err(split)
+        # self._config = config or ImagenetETL.default_config
+        # logger.info(
+            # f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
+        # )
+        # self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagnette'))
+        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+
+        # with h5py.File(self._root, mode="r") as f:
+            # self._images = f["images"][:]
+
+    # def __len__(self):
+        # return len(self._split_df)
+
+    # def __getitem__(self, idx: int):
+        # idx_row = self._split_df.iloc[idx]
+        # image = iio.imread(BytesIO(self._images[idx_row["df_idx"]]))
+        # image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
+        # image = self._config.image_pre(image)
+        # if self.split in ("train", "trainvaltest"):
+            # image = self._config.train_aug(image)
+        # elif self._split in ("val", "test"):
+            # image = self._config.eval_aug(image)
+        # return image, idx_row["label_idx"], idx_row["df_idx"]
+
+    # @property
+    # def root(self):
+        # return self._root
+
+    # @property
+    # def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
+        # return self._split
+
+    # @property
+    # def df(self) -> pd.DataFrame:
+        # return self._df
+
+    # @property
+    # def split_df(self) -> pd.DataFrame:
+        # return self._split_df
