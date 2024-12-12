@@ -18,7 +18,7 @@ from pathlib import Path
 from matplotlib.patches import Rectangle 
 from torchvision.transforms import v2 as T
 
-from .interfaces import Dataset, DatasetConfig
+from geovision.data import Dataset, DatasetConfig
 from geovision.io.local import FileSystemIO as fs
 
 class FMoWETL:

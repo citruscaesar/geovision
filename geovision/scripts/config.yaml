@@ -1,26 +1,26 @@
-project_name: imagenette 
-run_name: from_scratch 
+project_name: imagenet
+run_name: testing_dataloading 
 random_seed: 42
 
 trainer_task: fit 
 trainer_params:
   max_epochs: 5 
-  precision: 16 
+  precision: '16-mixed' 
   num_sanity_val_steps: 0
   enable_model_summary: True
 
 log_params:
-  log_to_h5: True
+  log_to_h5: False 
   log_to_wandb: False 
-  log_to_csv: True
+  log_to_csv: True 
   wandb_init_params:
     tags: ["imagenette", "resnet50"]
     notes: "training from scratch" 
   log_every_n_steps: 10
   log_every_n_epochs: 1
-  log_models: True 
+  log_models: False 
 
-dataset_name: imagenette_hdf5_classification 
+dataset_name: imagenet_hdf5_classification 
 dataset_params:
   df: null 
   tabular_sampler_name: imagefolder_notest 
@@ -41,13 +41,13 @@ dataset_params:
     from torchvision.transforms import v2 as T
     image_pre = T.Compose([
       T.ToImage(),
-      T.Resize((512, 512)),
+      # T.Resize((512, 512)),
       T.ToDtype(float32, scale = True),
       T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    train_aug = T.Identity()
     train_aug = T.Compose([
-      T.RandomCrop(256, pad_if_needed = True),
+      # T.RandomCrop(256, pad_if_needed = True),
+      T.RandomVerticalFlip(0.5),
       T.RandomHorizontalFlip(0.5),
     ])
     eval_aug = T.RandomCrop(256, pad_if_needed = True)
@@ -60,7 +60,7 @@ dataloader_params:
   num_workers: 3 
   persistent_workers: True 
   pin_memory: True 
-  prefetch_factor: 128
+  prefetch_factor: 8 
 
 metric_name: accuracy 
 metric_params: null

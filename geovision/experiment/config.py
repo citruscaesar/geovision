@@ -9,7 +9,7 @@ import torchmetrics
 import pandas as pd
 from pathlib import Path
 
-from geovision.data.interfaces import DatasetConfig, DataLoaderConfig
+from geovision.data import DatasetConfig, DataLoaderConfig
 from geovision.models.interfaces import ModelConfig
 from geovision.io.local import FileSystemIO as fs
 
@@ -260,15 +260,16 @@ class ExperimentConfig:
         metric_params: dict = self.metric_params or dict()
         return self._get_metric_constructor(metric_name)(**(metric_params | (addl_metric_params or dict())))
 
-    def _get_metric_task(self, dataset_constructor: Callable) -> str:
-        task_str = dataset_constructor.name.split("_")[-1]
-        match task_str:
-            case "classification":
-                return "multiclass" if dataset_constructor.num_classes > 2 else "binary"
-            case "multilabelclassification":
+    def _get_metric_task(self, dataset: Callable) -> str:
+        if dataset.task == "classification":
+            if dataset.subtask == "multiclass":
+                return "multiclass" if dataset.num_classes > 2 else "binary"
+            elif dataset.subtask == "multilabel":
                 return "multilabel"
-            case _:
-                raise AssertionError(f"config error (invalid value), :dataset_name has an invalid task str, got {task_str}")
+        elif dataset.task == "segmentation":
+            return "multiclass" if dataset.num_classes > 2 else "binary"
+        else:
+            raise AssertionError(f"config error (invalid value), {dataset.task} is invalid")
 
     def _get_model_constructor(self, model_type) -> lightning.LightningModule:
         match model_type:

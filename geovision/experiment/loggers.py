@@ -12,7 +12,7 @@ from lightning import Callback, LightningModule, Trainer
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 
-from geovision.data.interfaces import Dataset
+from geovision.data import Dataset
 from geovision.experiment.config import ExperimentConfig
 from .utils import plot as cfm_plot
 

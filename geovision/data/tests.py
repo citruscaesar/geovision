@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from litdata import StreamingDataLoader
 from memory_profiler import memory_usage
 from geovision.io.local import FileSystemIO as fs
-from geovision.data.interfaces import Dataset
+from geovision.data import Dataset
 from geovision.experiment.config import ExperimentConfig
 from geovision.analysis.viz import plot_batch
 

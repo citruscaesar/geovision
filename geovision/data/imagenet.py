@@ -27,7 +27,7 @@ from multiprocessing import Pool, cpu_count
 from geovision.data import Dataset, DatasetConfig
 from geovision.io.remote import HTTPIO
 from geovision.io.local import FileSystemIO as fs
-#from geovision.data.interfaces import Dataset, DatasetConfig
+#from geovision.data import Dataset, DatasetConfig
 
 import logging
 logger = logging.getLogger(__name__)
@@ -173,15 +173,13 @@ class ImagenetETL:
     imagenet_default_config = DatasetConfig(
         random_seed=42,
         tabular_sampler_name="imagefolder_notest",
-        tabular_sampler_params={"val_frac": 0.05},
+        tabular_sampler_params={"val_frac": 0.05, "split_on": "label_str"},
         image_pre=T.Compose([
             T.ToImage(),
+            #T.Resize(256, antialias=True),
             T.ToDtype(torch.float32, scale=True),
-            T.Resize(224, antialias=True),
         ]),
-        target_pre=T.Identity(),
-        train_aug=T.RandomHorizontalFlip(0.5),
-        eval_aug=T.Identity(),
+        train_aug=T.Compose([T.RandomVerticalFlip(0.5), T.RandomHorizontalFlip(0.5)])
     )
 
     @classmethod
@@ -629,7 +627,7 @@ class ImagenetHDF5Classification(Dataset):
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
         super().__init__(split, config)
-        self.df = self.get_df(split, prefix_root_to_paths=False)
+        self.df = self.get_df(prefix_root_to_paths=False)
         
     def __len__(self):
         return len(self.df)
@@ -639,11 +637,11 @@ class ImagenetHDF5Classification(Dataset):
         with h5py.File(self.root, mode="r") as hdf5_file:
             # image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
             image = decode_jpeg(torch.tensor(hdf5_file["images"][idx_row["df_idx"]], dtype = torch.uint8), ImageReadMode.RGB)
-        image = self._config.image_pre(image)
-        if self._split in ("train", "trainvaltest"):
-            image = self._config.train_aug(image)
-        elif self._split in ("val", "test"):
-            image = self._config.eval_aug(image)
+        image = self.config.image_pre(image)
+        if self.split in ("train", "trainvaltest"):
+            image = self.config.train_aug(image)
+        elif self.split in ("val", "test"):
+            image = self.config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
 
 class ImagenetteImagefolderClassification(Dataset):
@@ -699,11 +697,11 @@ class ImagenetteHDF5Classification(Dataset):
         with h5py.File(self.root, mode="r") as hdf5_file:
             image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
             #image = decode_jpeg(torch.tensor(hdf5_file["images"][idx_row["df_idx"]], dtype = torch.uint8), ImageReadMode.RGB)
-        image = self._config.image_pre(image)
-        if self._split in ("train", "trainvaltest"):
-            image = self._config.train_aug(image)
-        elif self._split in ("val", "test"):
-            image = self._config.eval_aug(image)
+        image = self.config.image_pre(image)
+        if self.split in ("train", "trainvaltest"):
+            image = self.config.train_aug(image)
+        elif self.split in ("val", "test"):
+            image = self.config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
 
 # class ImagenetLitDataClassification(litdata.StreamingDataset, Dataset):
@@ -734,19 +732,19 @@ class ImagenetteHDF5Classification(Dataset):
     # def __init__(self, split: Literal["train", "val", "test"] = "train", config: Optional[DatasetConfig] = None):
         # assert split in ("train", "val", "test"), f"invalid :split, got {split}"
         # self._root = fs.get_valid_dir_err(ImagenetETL.local, "litdata", split)
-        # self._split = self.get_valid_split_err(split)
-        # self._config = config or ImagenetETL.default_config
+        # self.split = self.get_valid_split_err(split)
+        # self.config = config or ImagenetETL.default_config
         # self._df = self.df_schema(ImagenetETL.get_dataset_df_from_litdata())
-        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+        # self.split_df = self.config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self.split)
         # super().__init__(input_dir=str(self._root), shuffle=True if split == "train" else False, drop_last=False, seed=config.random_seed, max_cache_size="200GB")
 
     # def __getitem__(self, idx: int):
         # data = super().__getitem__(idx)
-        # image = self._config.image_pre(data["image"])
+        # image = self.config.image_pre(data["image"])
         # if self.split in ("train", "trainvaltest"):
-            # image = self._config.train_aug(image)
-        # elif self._split in ("val", "test"):
-            # image = self._config.eval_aug(image)
+            # image = self.config.train_aug(image)
+        # elif self.split in ("val", "test"):
+            # image = self.config.eval_aug(image)
         # return image, data["label_idx"], data["df_idx"]
 
     # @property
@@ -755,7 +753,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split(self) -> Literal["train", "val", "test"]:
-        # return self._split
+        # return self.split
 
     # @property
     # def df(self) -> pd.DataFrame:
@@ -763,7 +761,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split_df(self) -> pd.DataFrame:
-        # return self._split_df
+        # return self.split_df
 
 # class ImagenetteImagefolderClassification(Dataset):
     # name = "imagenette_imagefolder_classification"
@@ -792,26 +790,26 @@ class ImagenetteHDF5Classification(Dataset):
 
     # def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
         # self._root = fs.get_valid_dir_err(ImagenetETL.local / "imagefolder" / "imagenette")
-        # self._split = self.get_valid_split_err(split)
-        # self._config = config or ImagenetETL.default_config
+        # self.split = self.get_valid_split_err(split)
+        # self.config = config or ImagenetETL.default_config
         # logger.info(
-            # f"init {self.name}[{self._split}]\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
+            # f"init {self.name}[{self.split}]\nimage_pre = {self.config.image_pre}\ntarget_pre = {self.config.target_pre}\ntrain_aug = {self.config.train_aug}\neval_aug = {self.config.eval_aug}"
         # )
-        # self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenette'))
-        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+        # self._df = self.config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'imagefolder', 'imagenette'))
+        # self.split_df = self.config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self.split)
 
     # def __len__(self):
-        # return len(self._split_df)
+        # return len(self.split_df)
 
     # def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        # idx_row = self._split_df.iloc[idx]
+        # idx_row = self.split_df.iloc[idx]
         # image = iio.imread(idx_row["image_path"], format_hint=".jpg").squeeze()
         # image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
-        # image = self._config.image_pre(image)
+        # image = self.config.image_pre(image)
         # if self.split in ("train", "trainvaltest"):
-            # image = self._config.train_aug(image)
-        # elif self._split in ("val", "test"):
-            # image = self._config.eval_aug(image)
+            # image = self.config.train_aug(image)
+        # elif self.split in ("val", "test"):
+            # image = self.config.eval_aug(image)
         # return image, idx_row["label_idx"], idx_row["df_idx"]
 
     # @property
@@ -820,7 +818,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        # return self._split
+        # return self.split
 
     # @property
     # def df(self) -> pd.DataFrame:
@@ -828,7 +826,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split_df(self) -> pd.DataFrame:
-        # return self._split_df
+        # return self.split_df
 
 # class ImagenetteHDF5Classification(Dataset):
     # name = "imagenette_hdf5_classification"
@@ -857,27 +855,27 @@ class ImagenetteHDF5Classification(Dataset):
 
     # def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
         # self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
-        # self._split = self.get_valid_split_err(split)
-        # self._config = config or ImagenetETL.default_config
+        # self.split = self.get_valid_split_err(split)
+        # self.config = config or ImagenetETL.default_config
         # logger.info(
-            # f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
+            # f"init {self.name}[{self.split}] using\nimage_pre = {self.config.image_pre}\ntarget_pre = {self.config.target_pre}\ntrain_aug = {self.config.train_aug}\neval_aug = {self.config.eval_aug}"
         # )
-        # self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenette'))
-        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+        # self._df = self.config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagenette'))
+        # self.split_df = self.config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self.split)
 
     # def __len__(self) -> int:
-        # return len(self._split_df)
+        # return len(self.split_df)
 
     # def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, int]:
-        # idx_row = self._split_df.iloc[idx]
+        # idx_row = self.split_df.iloc[idx]
         # with h5py.File(self._root, mode="r") as hdf5_file:
             # image = iio.imread(BytesIO(hdf5_file["images"][idx_row["df_idx"]]))
         # image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
-        # image = self._config.image_pre(image)
+        # image = self.config.image_pre(image)
         # if self.split in ("train", "trainvaltest"):
-            # image = self._config.train_aug(image)
-        # elif self._split in ("val", "test"):
-            # image = self._config.eval_aug(image)
+            # image = self.config.train_aug(image)
+        # elif self.split in ("val", "test"):
+            # image = self.config.eval_aug(image)
         # return image, idx_row["label_idx"], idx_row["df_idx"]
 
     # @property
@@ -886,7 +884,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        # return self._split
+        # return self.split
 
     # @property
     # def df(self) -> pd.DataFrame:
@@ -894,7 +892,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split_df(self) -> pd.DataFrame:
-        # return self._split_df
+        # return self.split_df
 
 # class ImagenetteInMemoryClassification(Dataset):
     # name = "imagenette_inmemory_classification"
@@ -923,29 +921,29 @@ class ImagenetteHDF5Classification(Dataset):
 
     # def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None) -> None:
         # self._root = fs.get_valid_file_err(ImagenetETL.local, "hdf5", "imagenette.h5")
-        # self._split = self.get_valid_split_err(split)
-        # self._config = config or ImagenetETL.default_config
+        # self.split = self.get_valid_split_err(split)
+        # self.config = config or ImagenetETL.default_config
         # logger.info(
-            # f"init {self.name}[{self._split}] using\nimage_pre = {self._config.image_pre}\ntarget_pre = {self._config.target_pre}\ntrain_aug = {self._config.train_aug}\neval_aug = {self._config.eval_aug}"
+            # f"init {self.name}[{self.split}] using\nimage_pre = {self.config.image_pre}\ntarget_pre = {self.config.target_pre}\ntrain_aug = {self.config.train_aug}\neval_aug = {self.config.eval_aug}"
         # )
-        # self._df = self._config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagnette'))
-        # self._split_df = self._config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self._split)
+        # self._df = self.config.verify_and_get_df(schema=self.df_schema, fallback_df=ImagenetETL.load('index', 'hdf5', 'imagnette'))
+        # self.split_df = self.config.verify_and_get_split_df(df=self._df, schema=self.split_df_schema, split=self.split)
 
         # with h5py.File(self._root, mode="r") as f:
             # self._images = f["images"][:]
 
     # def __len__(self):
-        # return len(self._split_df)
+        # return len(self.split_df)
 
     # def __getitem__(self, idx: int):
-        # idx_row = self._split_df.iloc[idx]
+        # idx_row = self.split_df.iloc[idx]
         # image = iio.imread(BytesIO(self._images[idx_row["df_idx"]]))
         # image = np.stack((image,) * 3, axis=-1) if image.ndim == 2 else image
-        # image = self._config.image_pre(image)
+        # image = self.config.image_pre(image)
         # if self.split in ("train", "trainvaltest"):
-            # image = self._config.train_aug(image)
-        # elif self._split in ("val", "test"):
-            # image = self._config.eval_aug(image)
+            # image = self.config.train_aug(image)
+        # elif self.split in ("val", "test"):
+            # image = self.config.eval_aug(image)
         # return image, idx_row["label_idx"], idx_row["df_idx"]
 
     # @property
@@ -954,7 +952,7 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split(self) -> Literal["train", "val", "test", "trainvaltest", "all"]:
-        # return self._split
+        # return self.split
 
     # @property
     # def df(self) -> pd.DataFrame:
@@ -962,4 +960,4 @@ class ImagenetteHDF5Classification(Dataset):
 
     # @property
     # def split_df(self) -> pd.DataFrame:
-        # return self._split_df
+        # return self.split_df

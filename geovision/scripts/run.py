@@ -1,13 +1,18 @@
 import logging
+import warnings
 from dotenv import load_dotenv
 from lightning import Trainer
-from torchvision.transforms import v2 as T  # type: ignore
+#from torchvision.transforms import v2 as T  # type: ignore
 from geovision.io.local import FileSystemIO as fs
 from lightning.pytorch.profilers import PyTorchProfiler
 from geovision.experiment.config import ExperimentConfig
-from geovision.data.interfaces import ImageDatasetDataModule
+from geovision.data import ImageDatasetDataModule
 from geovision.models.interfaces import ClassificationModule
 from geovision.experiment.loggers import get_csv_logger, get_ckpt_logger, get_classification_logger
+
+def log_warnings(message, category, filename, lineno, file=None, line=None):
+    logging.warning(f"{filename} : {lineno} : {category.__name__}: {message}")
+warnings.showwarning = log_warnings
 
 if __name__ == "__main__":
     load_dotenv()
@@ -43,12 +48,12 @@ if __name__ == "__main__":
     )
 
     profiler = PyTorchProfiler(
-        dirpath = config.ckpt_path / "logs", 
-        filename = "profiler",
+        dirpath=config.experiments_dir / "logs", 
+        filename="profiler",
         export_to_chrome=True,
     )
 
-    trainer = Trainer(logger = loggers, callbacks = callbacks, profiler = profiler, **config.trainer_params)
+    trainer = Trainer(logger=loggers, callbacks=callbacks, profiler=profiler, **config.trainer_params)
     if config.trainer_task == "fit":
         run = trainer.fit
     elif config.trainer_task == "validate":

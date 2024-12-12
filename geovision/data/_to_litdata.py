@@ -8,7 +8,7 @@ import pandera as pa
 from pathlib import Path
 from litdata import optimize
 from geovision.io.local import FileSystemIO as fs
-from geovision.data.interfaces import DatasetConfig
+from geovision.data import DatasetConfig
 
 def get_classification_sample(idx:int) -> dict:
     row = df.iloc[idx]

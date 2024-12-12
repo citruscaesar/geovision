@@ -15,7 +15,7 @@
 # from matplotlib.lines import Line2D
 # from matplotlib.table import Table
 
-# from geovision.data.interfaces import Dataset
+# from geovision.data import Dataset
 # from geovision.experiment.config import ExperimentConfig
 # #from geovision.experiment.utils import get_classification_metrics_df, get_classification_metrics_dict
 

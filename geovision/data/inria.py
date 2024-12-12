@@ -86,10 +86,10 @@ class Inria:
             raise NotImplementedError 
 
     @classmethod
-    def download(cls, subset: Literal["supervised", "unsupervised"] = "supervised"):
+    def download(cls, subset: Literal["inria"], supervised: bool = True):
         """downloads inria_:subset.h5 from s3://inria/hdf5/ to :local/hdf5. raises FileNotFoundError if s5cmd not installed in environment or file not in :remote"""
-        assert subset in ("supervised", "unsupervised"), f"value error, expected :subset to be one of supervised or unsupervised, got {subset}"
-        remote = f"s3://inria/hdf5/inria_{subset}.h5"
+        assert subset in ("inria",), f"value error, expected :subset to be one of supervised or unsupervised, got {subset}"
+        remote = f"s3://inria/hdf5/{subset}_{"supervised" if supervised else "unsupervised"}.h5"
         ret = subprocess.call(["s5cmd", "cp", remote, str(fs.get_new_dir(cls.local, "hdf5"))])
         if ret != 0:
             raise FileNotFoundError(f"couldn't find {remote}")
@@ -131,7 +131,14 @@ class Inria:
             return df
 
     @classmethod
-    def transform(cls, to: Literal["hdf5"], subset: Literal["inria"], supervised: bool = True):
+    def transform(
+            cls, 
+            to: Literal["hdf5"], 
+            subset: Literal["inria"], 
+            tile_size: Optional[tuple[int, int]] = None,
+            tile_stride: Optional[tuple[int, int]] = None,
+            supervised: bool = True
+        ):
         """transforms the :subset of dataset to :to and applies :transforms to each (image, mask) if provided"""
         assert to == "hdf5"
         assert subset == "inria"
@@ -141,6 +148,9 @@ class Inria:
         index_df = cls.load("index", "imagefolder", subset)
         spatial_df = cls.load("index", "imagefolder", subset)
                     
+        if tile_size is not None and tile_stride is not None:
+            sampler = DatasetConfig._get_spatial_sampler("sliding_window_tiler")
+
         with h5py.File(hdf5_path, mode = 'w') as file:
             images = file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
             if supervised:
