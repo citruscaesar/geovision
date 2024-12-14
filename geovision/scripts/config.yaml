@@ -20,7 +20,8 @@ log_params:
   log_every_n_epochs: 1
   log_models: False 
 
-dataset_name: imagenet_hdf5_classification 
+# dataset_name: imagenet_hdf5_classification 
+dataset_name: imagenet.Imagenet_1K_MultiClass_HDF5
 dataset_params:
   df: null 
   tabular_sampler_name: imagefolder_notest 
@@ -34,23 +35,27 @@ dataset_params:
   spectral_sampler_name: null 
   spectral_sampler_params: null
   batch_transform_name: null 
-  batch_transform_params: 
-    alpha: 0.85
+  batch_transform_params: mixup
+    alpha: 0.4
   transforms: |
     from torch import float32
     from torchvision.transforms import v2 as T
     image_pre = T.Compose([
       T.ToImage(),
-      # T.Resize((512, 512)),
+    ])
+    train_aug = T.Compose([
+      T.RandomCrop(160),
+      T.AutoAugment()
+      T.RandomVerticalFlip(0.5),
+      T.RandomHorizontalFlip(0.5),
       T.ToDtype(float32, scale = True),
       T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    train_aug = T.Compose([
-      # T.RandomCrop(256, pad_if_needed = True),
-      T.RandomVerticalFlip(0.5),
-      T.RandomHorizontalFlip(0.5),
+    eval_aug = T.Compose([
+      T.FiveCrop(224),
+      T.ToDtype(float32, scale = True)
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    eval_aug = T.RandomCrop(256, pad_if_needed = True)
     target_pre = None 
   
 dataloader_params:
@@ -58,7 +63,7 @@ dataloader_params:
   batch_size: 64 
   gradient_accumulation: 1
   num_workers: 3 
-  persistent_workers: True 
+  persistent_workers: False 
   pin_memory: True 
   prefetch_factor: 8 
 

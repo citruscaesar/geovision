@@ -1,10 +1,14 @@
-from typing import Any, Optional, Literal, Callable
+from numpy.typing import NDArray
+from typing import Any, Optional, Literal, Callable, Sequence
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 
 import logging
+import numpy as np
 import pandas as pd
 
 from pathlib import Path
+from functools import cache
+from itertools import product
 from pandera import DataFrameSchema
 from lightning import LightningDataModule
 from torch.utils.data import default_collate
@@ -64,52 +68,23 @@ class DatasetConfig:
         self.train_aug = train_aug or Identity()
         self.eval_aug = eval_aug or Identity()
 
-        # self.tabular_sampler_name = tabular_sampler_name
-        # if self.tabular_sampler_name is not None:
-            # self.tabular_sampler = self._get_tabular_sampler(tabular_sampler_name)
-            # self.tabular_sampler_params = ( tabular_sampler_params or dict() ) | {"random_seed" : self.random_seed}
-        # else:
-            # self.tabular_sampler = None
-            # self.tabular_sampler_params = None
-
-        # self.spatial_sampler_name = spatial_sampler_name
-        # if self.spatial_sampler_name is not None:
-            # self.spatial_sampler = self._get_spatial_sampler(spatial_sampler_name)
-            # self.spatial_sampler_params = ( spatial_sampler_params or dict() ) | {"random_seed" : self.random_seed}
-        # else:
-            # self.spatial_sampler = None
-            # self.spatial_sampler_params = None
-
-        # self.spectral_sampler_name = spectral_sampler_name
-        # if self.spectral_sampler_name is not None:
-            # self.spectral_sampler = self._get_spectral_sampler(spectral_sampler_name)
-            # self.spectral_sampler_params = ( spectral_sampler_params or dict() ) | {"random_seed" : self.random_seed}
-        # else:
-            # self.spectral_sampler = None
-            # self.spectral_sampler_params = None
-
-        # self.temporal_sampler_name = temporal_sampler_name
-        # if self.temporal_sampler_name is not None:
-            # self.temporal_sampler = self._get_temporal_sampler(temporal_sampler_name)
-            # self.temporal_sampler_params = ( temporal_sampler_params or dict() ) | {"random_seed" : self.random_seed}
-        # else:
-            # self.temporal_sampler = None
-            # self.temporal_sampler_params = None
-
     def _get_tabular_sampler(self, name: str):  # noqa: F821
         if name == "stratified":
-            return self._get_stratified_split_df
+            return self.stratified_tabular_sampler
         elif name == "equal":
-            return self._get_equal_split_df
-        elif name == "random":
-            return self._get_random_split_df
-        elif name ==  "imagefolder_notest":
-            return self._get_imagefolder_notest_split_df
+            return self.equals_tabular_sampler
+        elif name == "imagefolder":
+            return self.imagefolder_tabular_sampler
+        elif name == "imagenet":
+            return self.imagenet_tabular_sampler
         else:
             raise AssertionError(f"not implemented error, {name} has not been implemented/registered yet")
     
     def _get_spatial_sampler(self, name: str):
-        return None
+        if name == "sliding_window":
+            return self.sliding_window_spatial_sampler
+        else:
+            raise AssertionError(f"not implemented error, {name} has not been implemented/registered yet")
 
     def _get_spectral_sampler(self, name: str):
         return None
@@ -131,10 +106,10 @@ class DatasetConfig:
         return out
 
     @staticmethod
-    def _get_stratified_split_df(df: pd.DataFrame, random_seed: int, test_frac: float, val_frac: float, split_on: str) -> pd.DataFrame:
+    def stratified_tabular_sampler(index_df: pd.DataFrame, test_frac: float, val_frac: float, split_on: str, random_seed: int) -> pd.DataFrame:
         """
-        returns df split into train-val-test, by stratified(proportionate) sampling, based on :split_col and :split_config s.t. 
-        num_eval_samples[i] = eval_split * num_samples[i], where i -> {0, ..., num_classes-1}.
+        returns df split into train-val-test, by stratified(proportionate) sampling, based on :split_col (class label) such that for each (i^th)
+        class, i ∈ {0, ..., num_classes-1} and eval ∈ {val, test}, num_:eval_samples[i] = :eval_frac * num_samples[i]
 
         Parameters:
             :df -> table to resample
@@ -144,75 +119,84 @@ class DatasetConfig:
             :split_on -> column used to group by, must be present in :df
         
         """ 
-        assert split_on in df.columns 
+        assert split_on in index_df.columns 
         assert isinstance(test_frac, float), f"config error (invalid type), expected :test_frac to be of type float, got {type(test_frac)}"
         assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
         assert test_frac + val_frac > 0 and test_frac + val_frac < 1, \
             f"config error (invalid value), expected 0 < :test_frac + :val_frac < 1, got :test_frac={test_frac} and :val_frac={val_frac}"
 
         test = (
-            df
+            index_df
             .groupby(split_on, group_keys=False)
             .apply(lambda x: x.sample(frac=test_frac, random_state=random_seed, axis=0), include_groups=True)
             .assign(split = "test")
         ) 
         val = (
-            df
+            index_df
             .drop(test.index, axis = 0)
             .groupby(split_on, group_keys=False)
             .apply(lambda x: x.sample(frac=val_frac/(1-test_frac), random_state=random_seed, axis=0), include_groups=True) # type: ignore
             .assign(split="val")
         )
 
-        train = (df
-                .drop(test.index, axis = 0)
-                .drop(val.index, axis = 0)
-                .assign(split = "train"))
+        train = (
+            index_df
+            .drop(test.index, axis = 0)
+            .drop(val.index, axis = 0)
+            .assign(split = "train")
+        )
 
-        # TODO: DO NOT use .reset_index(), since data is stored in the exact order as :df
+        # TODO: DO NOT use .reset_index(), since data is stored in the exact order as :index_df
         return pd.concat([train, val, test]).sort_index()
 
     @staticmethod
-    def _get_random_split_df(df: pd.DataFrame, random_seed: int) -> pd.DataFrame:
-        return pd.DataFrame()
+    def equal_tabular_sampler(index_df: pd.DataFrame, num_val_samples: int, num_test_samples: int, split_on: str, random_seed: int) -> pd.DataFrame:
+        assert split_on in index_df.columns 
+        assert isinstance(num_val_samples, int) and num_val_samples >= 0
+        assert isinstance(num_test_samples, int) and num_test_samples >= 0
+        assert num_val_samples + num_test_samples < len(index_df)
+
+        test = (
+            index_df
+            .groupby(split_on, group_keys=False)
+            .apply(lambda x: x.sample(n = num_test_samples, random_state=random_seed, axis=0), include_groups=True)
+            .assign(split = "test")
+        )
+
+        val = (
+            index_df
+            .drop(index=test.index)
+            .groupby(split_on, group_keys=False)
+            .apply(lambda x: x.sample(n = num_val_samples, random_state=random_seed, axis=0), include_groups=True) # type: ignore
+            .assign(split="val")
+        )
+
+        train = (
+            index_df
+            .drop(index=test.index)
+            .drop(index=val.index)
+            .assign(split = "train")
+        )
+
+        # TODO: DO NOT use .reset_index(), since data is stored in the exact order as :index_df
+        return pd.concat([train, val, test]).sort_index()
 
     @staticmethod
-    def _get_equal_split_df(df: pd.DataFrame, random_seed: int, test_sample: int, val_sample: int) -> pd.DataFrame:
-        return pd.DataFrame()
-
-    @staticmethod
-    def _get_imagefolder_split_df(df: pd.DataFrame) -> pd.DataFrame:
-        """returns df by assiging splits based on top level parent dir names, assuming {split}/{class_dir}/{sample_image}
-        format in df["image_path"]"""
-        return df.assign(split = lambda df: df["image_path"].apply(lambda x: x.split('/')[0]))
-
-    @staticmethod
-    def _get_imagefolder_notest_split_df(df: pd.DataFrame, random_seed:int, val_frac: float, split_on: str) -> pd.DataFrame:
+    def imagenet_tabular_sampler(index_df: pd.DataFrame, val_frac: int, split_on: str, random_seed: int) -> pd.DataFrame:
         """
-        returns df where samples in the val/ directory are assigned split = test, and samples from the train/ dir are assigned split = train with a
-        stratified subset being assigned split = val based on :val_frac
-
-        Parameters
-        :df -> table to resample.
-        :random_seed -> for deterministic sampling.
-        :val_frac -> proportion of the images in train/ split per class to resample as val.
-        :split_on -> column in :df containing the parent class names, used to group by
-
+        returns df where split=test is assigned to samples with 'val' in their paths, and split=val sampled (:val_frac) proportionally from the 
+        remaining samples using the column named :split_on as the class label.
         """
-
-        assert split_on in df.columns
+        assert split_on in index_df.columns
         assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
-        assert val_frac > 0 and val_frac < 1.0, f"config error (invalid value), expected 0 < :val_frac < 1, got :val_frac={val_frac}"
+        assert val_frac >= 0.0 and val_frac < 1.0, f"config error (invalid value), expected 0 <= :val_frac < 1, got :val_frac={val_frac}"
 
         # list all samples inside val/ and assign split = test
-        test_filter = df["image_path"].apply(lambda x: "val" in str(x))
-        if len(test_filter) == 0:
-            raise KeyError("couldn't find samples inside 'val/' dir in the df")
-        test = df[test_filter].assign(split = "test")
+        test = index_df.loc[lambda df: df["image_path"].apply(lambda x: "val" in str(x))].assign(split = "test")
 
         # sample from inside train/ and assign split = val 
         val = (
-            df.drop(test.index, axis = 0)
+            index_df.drop(index=test.index)
             .groupby(split_on, group_keys=False)
             .apply(lambda x: x.sample(frac = val_frac, random_state = random_seed, axis = 0), include_groups = True)
             .assign(split = "val")
@@ -220,12 +204,134 @@ class DatasetConfig:
 
         # assign split = train to remaining samples
         train = (
-            df
+            index_df
             .drop(test.index, axis = 0)
             .drop(val.index, axis = 0)
             .assign(split = "train")
         )
         return pd.concat([train, val, test]).sort_index()
+
+    @staticmethod
+    def imagefolder_tabular_sampler(
+            index_df: pd.DataFrame, 
+            random_seed: int, 
+            val_split: Optional[int | float] = None,
+            split_on: Optional[str] = None 
+        ) -> pd.DataFrame:
+        """
+        returns df by assiging split based on the grand-parent dir, i.e., assuming a ../{split}/{class}/{image} format in :index_df["image_path"].
+        if the val/ dir is not found, :val_split samples from the train/ dir are assigned split=val using the :split_on column. 
+        if the test/ dir is not found, samples from the val/ dir are assigned split=test, and :val_split samples from the train/ dir are assigned 
+        split=val using the :split_on column. raises Assertion error if both test/ and val/ are missing.
+
+        Parameters
+        -
+        :index_df -> table to resample.
+        :random_seed -> for deterministic sampling.
+        :val_frac -> if integer, specifies the number of samples from train/ to resample as val/. if float, specifies proportion per 
+        class of the samples in train/ to resample as val/ .
+        :split_on -> column in :df containing the parent class names, used to group by, defaults to class_dir if not specified
+
+        """
+        def get_val(train_df: pd.DataFrame) -> pd.DataFrame:
+            val_df = train_df.groupby(split_on, group_keys=False)
+            if isinstance(val_split, int):
+                val_df = val_df.apply(lambda x: x.sample(n = val_split, random_state=random_seed, axis=0), include_groups=True) # type: ignore
+            elif isinstance(val_split, float):
+                val_df = val_df.apply(lambda x: x.sample(frac = val_split, random_state=random_seed, axis=0), include_groups=True) # type: ignore
+            val_df = val_df.assign(split="val")
+            return val_df
+
+        index_df["split"] = index_df["image_path"].apply(lambda x: str(x).split('/')[-3])
+
+        splits = set(index_df["split"].unique())
+        if "test" not in splits or "val" not in splits:
+            assert split_on in index_df.columns
+            assert val_split is not None and isinstance(val_split, (int, float))
+
+            if "test" not in splits:
+                assert "train" in splits and "val" in splits
+                test = index_df[index_df["split"] == "val"]
+            elif "val" not in splits:
+                assert "train" in splits and "test" in splits
+                test = index_df[index_df["split"] == "test"]
+            train = index_df[index_df["split"] == "train"]
+            val = get_val(train)
+            train = train.drop(index=val.index)
+            return pd.concat([train, val, test]).sort_index()
+        return index_df
+
+    @staticmethod
+    def sliding_window_spatial_sampler(
+            index_df: pd.DataFrame,
+            spatial_df: pd.DataFrame,
+            tile_size: int | Sequence[int],
+            tile_stride: int | Sequence[int]
+        ) -> pd.DataFrame:
+        """
+        returns df with tile_tl and tile_br, indicating the pixel coordinates of the top left and bottom right corners of the image tile respectively.
+        these are calculated by sliding a window of :tile_size over the image with :tile_stride. this sampler expects the image bounds to be specified
+        using 'image_width' and 'image_height' columns in the spatial_df.
+
+        Parameters
+        -
+        :index_df -> df to resample
+        :spatial_df -> df with spatial info, specifially image_height and image_width 
+        :tile_size -> size of tile in pixels used to calculate tile bounds. int is converted to tuple[int, int]
+        :tile_stride -> stride of sliding window in pixels used to calculate tile bounds. int is converted to tuple[int, int]
+        """
+        
+        @cache
+        def get_tl(length: int, stride: int) -> NDArray:
+            return np.arange(start=0, stop=length, step=stride, dtype=np.uint16)
+        
+        assert index_df.index.equals(spatial_df.index)
+        assert "image_height" in spatial_df.columns
+        assert "image_width" in spatial_df.columns
+
+        if isinstance(tile_size, int):
+            tile_size = (tile_size, tile_size)
+        if isinstance(tile_stride, int):
+            tile_stride = (tile_stride, tile_stride)
+
+        assert isinstance(tile_size, Sequence) and len(tile_size) == 2
+        assert isinstance(tile_stride, Sequence) and len(tile_stride) == 2
+
+        tl = {k:list() for k in ("idx", "tile_tl_0", "tile_tl_1")}
+        for idx, row in spatial_df.iterrows():
+            tl_0s = get_tl(row["image_height"], tile_stride[0])
+            tl_1s = get_tl(row["image_width"], tile_stride[1])
+            for tl_0, tl_1 in product(tl_0s, tl_1s):
+                tl["idx"].append(idx)
+                tl["tile_tl_0"].append(tl_0)
+                tl["tile_tl_1"].append(tl_1)
+            
+        df = pd.DataFrame(tl).set_index("idx").merge(index_df, how = "left", left_index=True, right_index=True)
+        df["tile_br_0"] = df["tile_tl_0"] + tile_size[0]
+        df["tile_br_1"] = df["tile_tl_1"] + tile_size[1]
+
+        #df["image_height"] = tile_size[0]
+        #df["image_width"] = tile_size[1]
+        df = df[index_df.columns.to_list() + ["tile_tl_0", "tile_tl_1", "tile_br_0", "tile_br_1"]]
+        return df
+
+    @classmethod
+    def band_combination_spectral_sampler(
+            index_df: pd.DataFrame,
+            spectral_df: pd.DataFrame,
+            bands: Sequence[int] 
+        ) -> pd.DataFrame:
+        """
+        returns df with the chosen :bands subset from the image. this fn expects the number of channels in the image to be specified by a column named
+        num_channels in the spectral_df
+
+        Parameters
+        -
+        :index_df -> table to be resampled
+        :spectral_df -> table containing spectral information
+        :bands -> bands to be subset from the multispectral image 
+        """
+        ...
 
 class DataLoaderConfig:
     def __init__(
@@ -271,9 +377,10 @@ class DataLoaderConfig:
 
 class Dataset:
     name: str
-    task: Literal["train", "val", "test", "trainvaltest", "all"]
+    task: str
     subtask: str 
-    storage: Literal["imagefolder", "hdf5", "litdata", "memory"]
+    split: str
+    storage: str
     class_names: tuple[str, ...]
     num_classes: int
     root: Path
@@ -289,19 +396,21 @@ class Dataset:
     valid_super_resolution_subtasks = ()
     valid_detection_subtasks = ()
 
-    def __init__(self, split: str, config: Optional[DatasetConfig]) -> None: # type: ignore  # noqa: F821
+    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"], config: Optional[DatasetConfig]) -> None: # type: ignore  # noqa: F821
         logger.info(f"attempting to init {self.name}_{self.storage}_{self.task}_{self.subtask}")
-        
-
         assert hasattr(self, "name") and isinstance(self.name, str)
         assert hasattr(self, "task") and self.task in self.valid_tasks 
         assert hasattr(self, "subtask") and self.subtask in getattr(self, f"valid_{self.task}_subtasks")
         assert hasattr(self, "storage") and self.storage in self.valid_storage_formats
-
         assert hasattr(self, "class_names") and isinstance(self.class_names, tuple)
         assert hasattr(self, "num_classes") and isinstance(self.num_classes, int) # and self.num_classes == len(self.class_names)
 
         assert hasattr(self, "root")
+        if self.storage in ("imagefolder", "litdata"):
+            assert self.root.is_dir()
+        elif self.storage == "hdf5" :
+            assert self.root.is_file() 
+
         assert hasattr(self, "config") and isinstance(self.config, DatasetConfig) 
         assert hasattr(self, "schema") and isinstance(self.schema, DataFrameSchema) 
         assert hasattr(self, "loader") and callable(self.loader) 

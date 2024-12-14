@@ -108,35 +108,46 @@ class Inria:
             except OSError:
                 assert table in ("index", "spatial"), \
                     f"not implemented error, expected :table to be one of index or spatial, since this function cannot create {table} metadata"
-                table = {k: list() for k in ("image_path", "image_height", "image_width", "xoff", "yoff", "crs")}
+                metadata = {k: list() for k in ("image_path", "image_height", "image_width", "x_off", "y_off", "x_res", "y_res", "crs")}
                 image_paths = (fs.get_valid_dir_err(metadata_path.parent) / ("images" if supervised else "unsup")).rglob("*.tif")
-                for image_path in tqdm(image_paths, total = 180):
-                    table["image_path"].append(f"{image_path.parent.name}/{image_path.name}")
+                for image_path in tqdm(image_paths, total = 180, desc = "reading images"):
+                    metadata["image_path"].append(f"{image_path.parent.name}/{image_path.name}")
                     with rio.open(image_path) as raster:
-                        table["image_width"].append(raster.width)
-                        table["image_height"].append(raster.height)
-                        table["xoff"].append(raster.transform.xoff)
-                        table["yoff"].append(raster.transform.yoff)
-                        table["crs"].append(raster.crs.to_epsg())
+                        metadata["image_width"].append(raster.width)
+                        metadata["image_height"].append(raster.height)
+                        metadata["x_off"].append(raster.transform.xoff)
+                        metadata["y_off"].append(raster.transform.yoff)
+                        metadata["x_res"].append(raster.transform.a)
+                        metadata["y_res"].append(raster.transform.e)
+                        metadata["crs"].append(raster.crs.to_epsg())
 
-                df = pd.DataFrame(table).sort_values("image_path").reset_index(drop = True)
+                df = pd.DataFrame(metadata).sort_values("image_path").reset_index(drop = True)
                 df["location"] = df["image_path"].apply(lambda x: ''.join([i for i in Path(x).stem if not i.isdigit()]))
+
                 if supervised:
                     df["mask_path"] = df["image_path"].apply(lambda x: f"masks/{x.split('/')[-1]}")
-                    df[["image_path", "mask_path", "location"]].to_hdf(metadata_path, key = "index", mode = 'a', index = True)
+                    index_df = df[["image_path", "mask_path", "location"]]
+                    index_df.to_hdf(metadata_path, key = "index", mode = 'a', index = True)
                 else:
                     df["image_path"] = df["image_path"].apply(lambda x: x.split('/')[-1])
-                    df[["image_path", "location"]].to_hdf(metadata_path, key = "index", mode = 'a', index = True)
-                df[["image_height", "image_width", "xoff", "yoff", "crs"]].to_hdf(metadata_path, key = "spatial", mode = 'r+', index = True)
-            return df
+                    index_df = df[["image_path", "location"]]
+                    index_df.to_hdf(metadata_path, key = "index", mode = 'a', index = True)
+
+                spatial_df = df[["image_height", "image_width", "x_off", "y_off", "x_res", "y_res", "crs"]]
+                spatial_df.to_hdf(metadata_path, key = "spatial", mode = 'r+', index = True)
+
+                if table == "index":
+                    return index_df
+                else:
+                    return spatial_df
 
     @classmethod
     def transform(
             cls, 
             to: Literal["hdf5"], 
             subset: Literal["inria"], 
-            tile_size: Optional[tuple[int, int]] = None,
-            tile_stride: Optional[tuple[int, int]] = None,
+            tile_size: Optional[int | tuple[int, int]] = None,
+            tile_stride: Optional[int | tuple[int, int]] = None,
             supervised: bool = True
         ):
         """transforms the :subset of dataset to :to and applies :transforms to each (image, mask) if provided"""
@@ -149,19 +160,65 @@ class Inria:
         spatial_df = cls.load("index", "imagefolder", subset)
                     
         if tile_size is not None and tile_stride is not None:
-            sampler = DatasetConfig._get_spatial_sampler("sliding_window_tiler")
+            index_columns = index_df.columns
+            index_df = DatasetConfig.sliding_window_spatial_sampler(index_df, spatial_df, tile_size, tile_stride)
+            index_df = index_df.merge(spatial_df, how = 'left', left_index=True, right_index=True)
+            index_df["x_off"] = index_df["x_off"] + index_df["tile_tl_0"] * index_df["x_res"]
+            index_df["y_off"] = index_df["y_off"] + index_df["tile_tl_1"] * index_df["y_res"]
+            if isinstance(tile_size, int):
+                tile_size = (tile_size, tile_size)
+            index_df["image_height"] = tile_size[0]
+            index_df["image_width"] = tile_size[1]
 
-        with h5py.File(hdf5_path, mode = 'w') as file:
-            images = file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
-            if supervised:
-                masks = file.create_dataset("masks", 180, dtype = h5py.special_dtype(vlen=np.int64))
-            for idx, row in tqdm(index_df.iterrows(), total = 180):
-                images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
+            with h5py.File(hdf5_path, mode = 'w') as file:
+                images = file.create_dataset("images", (len(index_df), *tile_size, 3), dtype = np.uint8)
+                images.attrs["image_size"] = tile_size
                 if supervised:
-                    masks[idx] = cls.encode_binary_mask(iio.imread(imagefolder_path / row["mask_path"], extension=".tif"))
+                    masks = file.create_dataset("masks", len(index_df), dtype=h5py.special_dtype(vlen=np.uint8))
+                for idx, row in tqdm(index_df.iterrow(), total = len(index_df)):
+                    image = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
+                    image = image[row["tile_tl_0"]: min(row["tile_br_0"], 5000), row["tile_tl_1"]: min(row["tile_br_1"], 5000), :]
 
-        index_df.to_hdf(hdf5_path, key = "index", mode = 'r+')
-        spatial_df.to_hdf(hdf5_path, key = "spatial", mode = 'r+')
+                    if supervised:
+                        mask = iio.imread(imagefolder_path / row["mask_path"], extension=".tif").squeeze()
+                        mask = mask[row["tile_tl_0"]: min(row["tile_br_0"], 5000), row["tile_tl_1"]: min(row["tile_br_1"], 5000)]
+
+                    if image.shape[0] < tile_size[0] or image.shape[1] < tile_size[1]:
+                        pad_along_0 = tile_size[0] - image.shape[0]
+                        if pad_along_0 % 2 == 0:
+                            pad_along_0 = (pad_along_0//2, pad_along_0//2)
+                        else:
+                            pad_along_0 = (pad_along_0//2, (pad_along_0//2) + 1)
+
+                        pad_along_1 = tile_size[1] - image.shape[1]
+                        if pad_along_1 % 2 == 0:
+                            pad_along_1 = (pad_along_1//2, pad_along_1//2)
+                        else:
+                            pad_along_1 = (pad_along_1//2, (pad_along_1//2) + 1)
+
+                        image = np.pad(image, (pad_along_0, pad_along_1, 0)) 
+                        if supervised:
+                            mask = np.pad(mask, (pad_along_0, pad_along_1))
+                        
+                    images[idx] = image
+                    if supervised:
+                        masks[idx] = cls.encode_binary_mask(mask)
+            
+            index_df[index_columns].to_hdf(hdf5_path, key = 'index', mode = 'r+')
+            index_df[index_df.columns.difference(index_columns)].to_hdf(hdf5_path, key = 'spatial', mode = 'r+')
+
+        else:
+            with h5py.File(hdf5_path, mode = 'w') as file:
+                images = file.create_dataset("images", (180, 5000, 5000, 3), dtype = np.uint8)
+                images.attrs["image_size"] = (5000,5000)
+                if supervised:
+                    masks = file.create_dataset("masks", 180, dtype = h5py.special_dtype(vlen=np.uint8))
+                for idx, row in tqdm(index_df.iterrows(), total = 180):
+                    images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
+                    if supervised:
+                        masks[idx] = cls.encode_binary_mask(iio.imread(imagefolder_path / row["mask_path"], extension=".tif"))
+            index_df.to_hdf(hdf5_path, key = "index", mode = 'r+')
+            spatial_df.to_hdf(hdf5_path, key = "spatial", mode = 'r+')
 
     @staticmethod
     def encode_binary_mask(mask : NDArray) -> NDArray:
