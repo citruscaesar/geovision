@@ -4,7 +4,7 @@ random_seed: 42
 
 trainer_task: fit 
 trainer_params:
-  max_epochs: 5 
+  max_epochs: 1 
   precision: '16-mixed' 
   num_sanity_val_steps: 0
   enable_model_summary: True
@@ -14,7 +14,7 @@ log_params:
   log_to_wandb: False 
   log_to_csv: True 
   wandb_init_params:
-    tags: ["imagenette", "resnet50"]
+    tags: ["imagenet", "resnet50"]
     notes: "training from scratch" 
   log_every_n_steps: 10
   log_every_n_epochs: 1
@@ -24,9 +24,9 @@ log_params:
 dataset_name: imagenet.Imagenet_1K_MultiClass_HDF5
 dataset_params:
   df: null 
-  tabular_sampler_name: imagefolder_notest 
+  tabular_sampler_name: imagenet 
   tabular_sampler_params:
-    val_frac: 0.25 
+    val_frac: 0.05 
     split_on: label_str
   spatial_sampler_name: null
   spatial_sampler_params:
@@ -42,6 +42,9 @@ dataset_params:
     from torchvision.transforms import v2 as T
     image_pre = T.Compose([
       T.ToImage(),
+      T.Resize(128),
+      T.ToDtype(float32, scale = True),
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
     train_aug = T.Compose([
       T.RandomCrop(160),
@@ -60,14 +63,14 @@ dataset_params:
   
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 64 
+  batch_size: 64
   gradient_accumulation: 1
-  num_workers: 3 
+  num_workers: 8
   persistent_workers: False 
   pin_memory: True 
-  prefetch_factor: 8 
+  prefetch_factor: 2
 
-metric_name: accuracy 
+metric_name: Accuracy 
 metric_params: null
 
 model_type: classification
@@ -75,27 +78,27 @@ model_params:
   # a valid ckpt path means the litmodule state dict will be loaded from here, and :weights in the encoder/deocder params will be ignored
   # however the ckpt is checked to contain these same encoder and decoders
   ckpt_path: null
-  encoder_name: resnet
+  encoder_name: geovision.models.resnet.ResNet
   encoder_params:
-    layers: 18 
+    layers: 50 
     weights: torchvision 
-    weights_param: ResNet18_Weights.DEFAULT
+    weights_param: ResNet50_Weights.DEFAULT
   decoder_name: linear 
   decoder_params:
-    in_features: 512 
+    in_features: 2048 
     bias: True
   
-criterion_name: cross_entropy
+criterion_name: CrossEntropyLoss
 criterion_params:
   reduction: mean
 
-optimizer_name: sgd
+optimizer_name: SGD 
 optimizer_params:
   lr: 5.0e-6
   momentum: 0.9
   weight_decay: 5.0e-4
 
-# scheduler_name: linear_lr
+# scheduler_name: LinearLR 
 # scheduler_params:
   # start_factor: 1.0 
   # end_factor: 0.001 

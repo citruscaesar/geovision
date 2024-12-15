@@ -10,6 +10,9 @@ from geovision.data import ImageDatasetDataModule
 from geovision.models.interfaces import ClassificationModule
 from geovision.experiment.loggers import get_csv_logger, get_ckpt_logger, get_classification_logger
 
+# 1. Add options to change mode [fit, validate, test], select config.yaml, select profiling, delete logs dir before starting, to run.py
+# 2. Redirect [all] warnings to logfile, not to stdout
+
 def log_warnings(message, category, filename, lineno, file=None, line=None):
     logging.warning(f"{filename} : {lineno} : {category.__name__}: {message}")
 warnings.showwarning = log_warnings

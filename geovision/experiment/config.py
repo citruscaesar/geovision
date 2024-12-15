@@ -4,12 +4,13 @@ from collections.abc import Callable
 import yaml
 import torch
 import logging
+import importlib
 import lightning
 import torchmetrics
 import pandas as pd
 from pathlib import Path
 
-from geovision.data import DatasetConfig, DataLoaderConfig
+from geovision.data import Dataset, DatasetConfig, DataLoaderConfig
 from geovision.models.interfaces import ModelConfig
 from geovision.io.local import FileSystemIO as fs
 
@@ -203,7 +204,7 @@ class ExperimentConfig:
         config_dict["dataset_params"]["train_aug"] = namespace["train_aug"]  # type: ignore # noqa: F821
         config_dict["dataset_params"]["eval_aug"] = namespace["eval_aug"]  # type: ignore # noqa: F821
         return cls(**config_dict)
-
+    
     def __repr__(self) -> str:
         # TODO: print this as a pretty table :: self -> pd.DataFrame -> tabulate -> str
         out = f"==Experiment Config==\nProject Name: {self.project_name}\nRun Name: {self.run_name}\nRandom Seed: {self.random_seed}\n\n"
@@ -255,7 +256,7 @@ class ExperimentConfig:
     def grad_accum(self) -> int:
         return self.dataloader_config.gradient_accumulation
 
-    def get_metric(self, metric_name: Optional[str] = None, addl_metric_params: Optional[dict] = None):
+    def get_metric(self, metric_name: Optional[str] = None, addl_metric_params: Optional[dict] = None) -> torchmetrics.Metric:
         metric_name: str = metric_name or self.metric_name
         metric_params: dict = self.metric_params or dict()
         return self._get_metric_constructor(metric_name)(**(metric_params | (addl_metric_params or dict())))
@@ -271,185 +272,28 @@ class ExperimentConfig:
         else:
             raise AssertionError(f"config error (invalid value), {dataset.task} is invalid")
 
-    def _get_model_constructor(self, model_type) -> lightning.LightningModule:
-        match model_type:
-            case "classification":
-                from geovision.models.interfaces import ClassificationModule 
-                return ClassificationModule
-            case "gan":
-                from geovision.models.interfaces import GANModule
-                return GANModule
-            case _:
-                raise AssertionError(f"config error (not implmented), got {model_type}")
+    def _get_model_constructor(self, model_name) -> Callable[..., torch.nn.Module]:
+        module, class_name = model_name.split('.')
+        module = '.'.join(["geovision", "data", module])
+        return getattr(importlib.import_module(module), class_name)
+        
+    def _get_metric_constructor(self, metric_name: str) -> Callable[..., torchmetrics.Metric]:
+        return getattr(importlib.import_module("torchmetrics"), metric_name)
+        
+    def _get_dataset_constructor(self, dataset_name: str) -> Callable[..., Dataset]:
+        module, class_name = dataset_name.split('.')
+        module = '.'.join(["geovision", "data", module])
+        return getattr(importlib.import_module(module), class_name)
 
-    def _get_model_constructor(self, model_name) -> torch.nn.Module:
-        match model_name:
-            case "alexnet":
-                from torchvision.models import alexnet
-                return alexnet
-            case "resnet":
-                from geovision.models.resnet import ResNet
-                return ResNet 
-            case _:
-                raise AssertionError(f"config error (not implemented), got {model_name}")
-
-    def _get_metric_constructor(self, metric_name: str):
-        match metric_name:
-            case "accuracy":
-                return torchmetrics.Accuracy
-            case "precision":
-                return torchmetrics.Precision
-            case "recall":
-                return torchmetrics.Recall
-            case "f1":
-                return torchmetrics.F1Score
-            case "iou":
-                return torchmetrics.JaccardIndex
-            case "confusion_matrix":
-                return torchmetrics.ConfusionMatrix
-            case "cohen_kappa":
-                return torchmetrics.CohenKappa
-            case "auroc":
-                return torchmetrics.AUROC
-            case _:
-                raise AssertionError(f"config error (not implemented), got {metric_name}")
-
-    def _get_dataset_constructor(self, dataset_name: str):
-        match dataset_name:
-            case "imagenette_imagefolder_classification":
-                from geovision.data.imagenet import ImagenetteImagefolderClassification
-
-                return ImagenetteImagefolderClassification
-            case "imagenette_hdf5_classification":
-                from geovision.data.imagenet import ImagenetteHDF5Classification
-
-                return ImagenetteHDF5Classification
-            case "imagenet_imagefolder_classification":
-                from geovision.data.imagenet import ImagenetImagefolderClassification
-
-                return ImagenetImagefolderClassification
-            case "imagenet_hdf5_classification":
-                from geovision.data.imagenet import ImagenetHDF5Classification
-
-                return ImagenetHDF5Classification
-            case "imagenet_litdata_classification":
-                from geovision.data.imagenet import ImagenetLitDataClassification
-
-                return ImagenetLitDataClassification
-            case "fmow_hdf5_classification":
-                from geovision.data.fmow import FMoWHDF5Classification
-
-                return FMoWHDF5Classification
-            case _:
-                raise AssertionError(f"config error (not implemented), got {dataset_name}")
-
-    def _get_criterion_constructor(self, criterion_name: str) -> torch.nn.Module:
-        match criterion_name:
-            case "binary_cross_entropy_with_logits":
-                return (torch.nn.BCEWithLogitsLoss,)
-            case "l1":
-                return torch.nn.L1Loss
-            case "nll":
-                return torch.nn.NLLLoss
-            case "poisson_nll":
-                return torch.nn.PoissonNLLLoss
-            case "hinge":
-                return torch.nn.HingeEmbeddingLoss
-            case "multilabel_margin":
-                return torch.nn.MultiLabelMarginLoss
-            case "smooth_l1":
-                return torch.nn.SmoothL1Loss
-            case "huber":
-                return torch.nn.HuberLoss
-            case "soft_margin":
-                return torch.nn.SoftMarginLoss
-            case "cross_entropy":
-                return torch.nn.CrossEntropyLoss
-            case "multilabel_soft_margin":
-                return torch.nn.MultiLabelSoftMarginLoss
-            case "cosine_embedding":
-                return torch.nn.CosineEmbeddingLoss
-            case "margin_ranking":
-                return torch.nn.MarginRankingLoss
-            case "multi_margin":
-                return torch.nn.MultiMarginLoss
-            case "triplet_margin":
-                return torch.nn.TripletMarginLoss
-            case "triplet_margine_with_distance":
-                return torch.nn.TripletMarginWithDistanceLoss
-            case "ctc":
-                return torch.nn.CTCLoss
-            case _:
-                raise AssertionError(f"config error (not implemented), got {criterion_name}")
-
-    def _get_optimizer_constructor(self, optimizer_name: str) -> torch.optim.Optimizer:
-        match optimizer_name:
-            case "sgd":
-                return torch.optim.SGD
-            case "adam":
-                return torch.optim.Adam
-            case "adamw":
-                return torch.optim.AdamW
-            case "adadelta":
-                return torch.optim.Adadelta
-            case "adagrad":
-                return torch.optim.Adagrad
-            case "adamax":
-                return torch.optim.Adamax
-            case "asgd":
-                return torch.optim.ASGD
-            case "lbfgs":
-                return torch.optim.LBFGS
-            case "nadam":
-                return torch.optim.NAdam
-            case "radam":
-                return torch.optim.RAdam
-            case "rmsprop":
-                return torch.optim.RMSprop
-            case "rprop":
-                return torch.optim.Rprop
-            case "sparseadam":
-                return torch.optim.SparseAdam
-            case _:
-                raise AssertionError(f"config error (not implemented), got {optimizer_name}")
-
-    def _get_scheduler_constructor(self, scheduler_name: str) -> torch.optim.lr_scheduler.LRScheduler:
-        match scheduler_name:
-            case "reduce_lr_on_plateau":
-                return torch.optim.lr_scheduler.ReduceLROnPlateau
-            case "lambda_lr":
-                return torch.optim.lr_scheduler.LambdaLR
-            case "multiplicative_lr":
-                return torch.optim.lr_scheduler.MultiplicativeLR
-            case "step_lr":
-                return torch.optim.lr_scheduler.StepLR
-            case "multistep_lr":
-                return torch.optim.lr_scheduler.MultiStepLR
-            case "constant_lr":
-                return torch.optim.lr_scheduler.ConstantLR
-            case "linear_lr":
-                return torch.optim.lr_scheduler.LinearLR
-            case "exponential_lr":
-                return torch.optim.lr_scheduler.ExponentialLR
-            case "sequential_lr":
-                return torch.optim.lr_scheduler.SequentialLR
-            case "cosine_annealing_lr":
-                return torch.optim.lr_scheduler.CosineAnnealingLR
-            case "chained_scheduler_lr":
-                return torch.optim.lr_scheduler.ChainedScheduler
-            case "reduce_lr_on_plateau_lr":
-                return torch.optim.lr_scheduler.ReduceLROnPlateau
-            case "cyclic_lr":
-                return torch.optim.lr_scheduler.CyclicLR
-            case "cosine_annealing_warm_restarts_lr":
-                return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-            case "one_cycle_lr":
-                return torch.optim.lr_scheduler.OneCycleLR
-            case "polynomial_lr":
-                return torch.optim.lr_scheduler.PolynomialLR
-            case _:
-                raise AssertionError(f"config error (not implemented), got {scheduler_name}")
-
+    def _get_criterion_constructor(self, criterion_name: str) -> Callable[..., torch.nn.Module]:
+        return getattr(importlib.import_module("torch.nn"), criterion_name)
+        
+    def _get_optimizer_constructor(self, optimizer_name: str) -> Callable[..., torch.optim.Optimizer]:
+        return getattr(importlib.import_module("torch.optim"), optimizer_name)
+        
+    def _get_scheduler_constructor(self, scheduler_name: str) -> Callable[..., torch.optim.lr_scheduler.LRScheduler]:
+        return getattr(importlib.import_module("torch.optim.lr_scheduler"), scheduler_name)
+        
 if __name__ == "__main__":
     config = ExperimentConfig.from_yaml(Path.home() / "dev" / "geovision" / "geovision" / "scripts" / "config.yaml")
     print(config.ckpt_path)
