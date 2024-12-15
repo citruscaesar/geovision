@@ -344,6 +344,13 @@ class Inria:
             approximation_tolerance: Optional[float] = None
     ) -> list[Polygon]:
 
+        # contours = skimage.measure.find_contours(mask)
+        # fig, ax = plt.subplots(1,1, figsize = (10, 10))
+        # ax.imshow(mask, cmap = "gray")
+        # for contour in contours:
+            # contour = skimage.measure.approximate_polygon(contour, 1)
+            # ax.plot(contour[:, 1], contour[:, 0], linewidth=1)
+        # ax.axis("off");
         if method == "manual":
             mask = sieve(mask, size=min_pixels, connectivity=connectivity)
 
