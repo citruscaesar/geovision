@@ -266,23 +266,24 @@ class DatasetConfig:
             index_df: pd.DataFrame,
             spatial_df: pd.DataFrame,
             tile_size: int | Sequence[int],
-            tile_stride: int | Sequence[int]
+            tile_stride: int | Sequence[int],
+            **kwargs
         ) -> pd.DataFrame:
         """
-        returns df with tile_tl and tile_br, indicating the pixel coordinates of the top left and bottom right corners of the image tile respectively.
-        these are calculated by sliding a window of :tile_size over the image with :tile_stride. this sampler expects the image bounds to be specified
-        using 'image_width' and 'image_height' columns in the spatial_df.
+        returns df with tile_x_min, x_max, y_min and y_max , indicating the pixel coordinates of the top left and bottom right corners of the image 
+        tile respectively. these are calculated by sliding a window of :tile_size over the image with :tile_stride. this sampler expects the image 
+        bounds to be specified using 'image_width' and 'image_height' columns in the spatial_df.
 
         Parameters
         -
-        :index_df -> df to resample
-        :spatial_df -> df with spatial info, specifially image_height and image_width 
-        :tile_size -> size of tile in pixels used to calculate tile bounds. int is converted to tuple[int, int]
-        :tile_stride -> stride of sliding window in pixels used to calculate tile bounds. int is converted to tuple[int, int]
+        :index_df > df to resample\n
+        :spatial_df > df with spatial info, specifially image_height and image_width\n 
+        :tile_size > size of tile in pixels used to calculate tile bounds. int is converted to tuple[int, int]\n
+        :tile_stride > stride of sliding window in pixels used to calculate tile bounds. int is converted to tuple[int, int]\n
         """
         
         @cache
-        def get_tl(length: int, stride: int) -> NDArray:
+        def get_min(length: int, stride: int) -> NDArray:
             return np.arange(start=0, stop=length, step=stride, dtype=np.uint16)
         
         assert index_df.index.equals(spatial_df.index)
@@ -297,22 +298,19 @@ class DatasetConfig:
         assert isinstance(tile_size, Sequence) and len(tile_size) == 2
         assert isinstance(tile_stride, Sequence) and len(tile_stride) == 2
 
-        tl = {k:list() for k in ("idx", "tile_tl_0", "tile_tl_1")}
+        top_left = {k:list() for k in ("idx", "y_min", "x_min")}
         for idx, row in spatial_df.iterrows():
-            tl_0s = get_tl(row["image_height"], tile_stride[0])
-            tl_1s = get_tl(row["image_width"], tile_stride[1])
-            for tl_0, tl_1 in product(tl_0s, tl_1s):
-                tl["idx"].append(idx)
-                tl["tile_tl_0"].append(tl_0)
-                tl["tile_tl_1"].append(tl_1)
+            y_mins = get_min(row["image_height"], tile_stride[0])
+            x_mins = get_min(row["image_width"], tile_stride[1])
+            for y_min, x_min in product(y_mins, x_mins):
+                top_left["idx"].append(idx)
+                top_left["y_min"].append(y_min)
+                top_left["x_min"].append(x_min)
             
-        df = pd.DataFrame(tl).set_index("idx").merge(index_df, how = "left", left_index=True, right_index=True)
-        df["tile_br_0"] = df["tile_tl_0"] + tile_size[0]
-        df["tile_br_1"] = df["tile_tl_1"] + tile_size[1]
-
-        #df["image_height"] = tile_size[0]
-        #df["image_width"] = tile_size[1]
-        df = df[index_df.columns.to_list() + ["tile_tl_0", "tile_tl_1", "tile_br_0", "tile_br_1"]]
+        df = pd.DataFrame(top_left).set_index("idx").merge(index_df, how = "left", left_index=True, right_index=True)
+        df["y_max"] = df["y_min"] + tile_size[0]
+        df["x_max"] = df["x_min"] + tile_size[1]
+        df = df[index_df.columns.to_list() + ["y_min", "y_max", "x_min", "x_max"]]
         return df
 
     @classmethod
@@ -322,8 +320,8 @@ class DatasetConfig:
             bands: Sequence[int] 
         ) -> pd.DataFrame:
         """
-        returns df with the chosen :bands subset from the image. this fn expects the number of channels in the image to be specified by a column named
-        num_channels in the spectral_df
+        returns df with the chosen :bands subset from the image. this fn expects the number of channels in the image to be specified by a column 
+        named num_channels in the spectral_df
 
         Parameters
         -
@@ -397,6 +395,7 @@ class Dataset:
     valid_detection_subtasks = ()
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"], config: Optional[DatasetConfig]) -> None: # type: ignore  # noqa: F821
+        # Check init args
         logger.info(f"attempting to init {self.name}_{self.storage}_{self.task}_{self.subtask}")
         assert hasattr(self, "name") and isinstance(self.name, str)
         assert hasattr(self, "task") and self.task in self.valid_tasks 
@@ -405,9 +404,10 @@ class Dataset:
         assert hasattr(self, "class_names") and isinstance(self.class_names, tuple)
         assert hasattr(self, "num_classes") and isinstance(self.num_classes, int) # and self.num_classes == len(self.class_names)
 
+        # Verify files exist on 
         assert hasattr(self, "root")
         if self.storage in ("imagefolder", "litdata"):
-            assert self.root.is_dir()
+            fs.get_valid_dir_err(self.root, empty_ok = False)# self.root.is_dir()
         elif self.storage == "hdf5" :
             assert self.root.is_file() 
 
@@ -430,7 +430,7 @@ class Dataset:
                     logger.info(f"found {sampler_name} sampling, using fn: {sampler} and params: {params}")
                     if sampler_name != "tabular":
                         params[f"{sampler_name}_df"] = self.loader(sampler_name, self.storage, self.name)
-                    df = sampler(df = df, **params)
+                    df = sampler(index_df = df, **params)
                     logger.info(f"successfully applied {sampler_name} sampling")
                 else:
                     logger.info(f"did not find {sampler_name} sampler, skipping")
@@ -447,7 +447,7 @@ class Dataset:
        
     def __repr__(self) -> str:
         return '\n'.join([
-            f"{self.name} dataset for {self.task}_{self.subtask}",
+            f"{self.name} dataset for {self.subtask} {self.task}",
             f"local {self.storage} @ [{self.root}] ",
             f"with {len(self.class_names)} classes and {len(self)} images under the '{self.split}' split",
         ])

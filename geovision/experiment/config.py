@@ -28,7 +28,7 @@ class ExperimentConfig:
         dataset_name: Optional[str] = None,
         dataset_params: Optional[dict] = None,
         dataloader_params: Optional[dict] = None,
-        model_type: Optional[str] = None,
+        model_name: Optional[str] = None,
         model_params: Optional[dict] = None,
         metric_name: Optional[str] = None,
         metric_params: Optional[dict] = None,
@@ -131,19 +131,17 @@ class ExperimentConfig:
             self.metric_params = None
         self.metric_name = metric_name
 
-        if model_type is not None:
-            assert model_type in ("classification", "gan"), \
-                f"config error (invalid value), expected :model_type to be one of ('classification', 'gan') got {model_type}"
+        if model_name is not None:
             assert isinstance(model_params, dict), f"config error (invalid type), expected :model_params to be dict, got {type(model_params)}"
+
+            self.model_name = getattr(importlib.import_module("geovision.models.interfaces"), model_name)
             decoder_params = model_params.get("decoder_params") 
             if decoder_params is not None:
-                assert isinstance(decoder_params, dict), \
-                    f"config error (invalid type), expected :decoder_params to be dict, got {type(decoder_params)}"
-                decoder_params["out_features"] = self.dataset_constructor.num_classes
+                decoder_params["out_ch"] = self.dataset_constructor.num_classes
             self.model_config = ModelConfig(**model_params)
+
         else:
             self.model_config = None
-        self.model_type = model_type
 
         if criterion_name is not None:
             self.criterion_constructor = self._get_criterion_constructor(criterion_name)
@@ -210,7 +208,7 @@ class ExperimentConfig:
         out = f"==Experiment Config==\nProject Name: {self.project_name}\nRun Name: {self.run_name}\nRandom Seed: {self.random_seed}\n\n"
         out += f"==Logging Config==\n{"\n".join(str(self.log_params).removeprefix("{").removesuffix("}").split(", "))}\n\n"
         out += f"==Dataset Config==\nDataset: {self.dataset_name} [{self.dataset_constructor}]\n{self.dataset_config}Dataloader Params: {self.dataloader_config}\n\n"
-        out += f"==Model Config==\nModel Type: {self.model_type}\nEncoder:{self.model_config.encoder_name} {self.model_config.encoder_params}\nDecoder:{self.model_config.decoder_name} {self.model_config.decoder_params}\n\n"
+        out += f"==Model Config==\nModel Type: {self.model_name}\nEncoder:{self.model_config.encoder_name} {self.model_config.encoder_params}\nDecoder:{self.model_config.decoder_name} {self.model_config.decoder_params}\n\n"
         out += f"==Task Config==\nTrainer Task: {self.trainer_task}\nTrainer Params: {self.trainer_params}\n\n"
         out += f"==Evaluation Config==\nCriterion: {self.criterion_name} [{self.criterion_constructor}]\nCriterion Params: {self.criterion_params}\n"
         out += f"Metric: {self.metric_name} [{self.metric_constructor}]\nMetric Params: {self.metric_params}\n\n"
@@ -268,7 +266,8 @@ class ExperimentConfig:
             elif dataset.subtask == "multilabel":
                 return "multilabel"
         elif dataset.task == "segmentation":
-            return "multiclass" if dataset.num_classes > 2 else "binary"
+            #return "multiclass" if dataset.num_classes > 2 else "binary"
+            return "multiclass"
         else:
             raise AssertionError(f"config error (invalid value), {dataset.task} is invalid")
 

@@ -1,40 +1,27 @@
 from typing import Literal, Optional
+
 import torch
-import torchvision # type: ignore
+from geovision.io.local import FileSystemIO as fs
 
-def alexnet(
-        num_classes: int = 1000,
-        dropout: float = 0.5,
-        weights: Optional[Literal["imagenet", "default"]] = "default",
-        **kwargs 
-    ) -> torch.nn.Module:
+def get_state_dict(weights_init: Literal["torchvision", "torchgeo", "url", "path"], weights_param: Optional[str] = None):
+    valid_weights_inits = ("torchvision", "torchgeo", "url", "path") 
+    assert weights_init in valid_weights_inits, f"config error, expected :weights to be one of {valid_weights_inits}, got {weights_init}"
 
-    match weights:
-        case "imagenet":
-            model = torchvision.models.alexnet(weights = torchvision.models.AlexNet_Weights.IMAGENET1K_V1)
-            if num_classes != 1000:
-                model.classifier[-1] = torch.nn.Linear(4096, num_classes)
-            return model
-        case _:
-            return torchvision.models.alexnet(num_classes = num_classes, dropout = dropout)
+    if weights_init in ("torchvision", "torchgeo"):
+        assert weights_param is not None, f"config error, did not expect :weights_param be None when :weights_init is {weights_init}"
+        if weights_init == "torchvision":
+            import torchvision
+            weights = torchvision.models.get_weight(weights_param)
+        elif weights_init == "torchgeo":
+            raise NotImplementedError("loading torchgeo weights is not implemented yet, need to fix poetry for that")
+            # import torchgeo.models
+            # weights = torchgeo.models.get_weight(weights_param)
+        return weights.get_state_dict()
 
-def resnet(
-        num_layers: int = 18,
-        num_classes: int = 1000,
-        weights: Optional[Literal["imagenet", "he"]] = None,
-        **kwargs
-    ) -> torch.nn.Module:
-    match num_layers:
-        case 18:
-            _resnet, _weights = torchvision.models.resnet18, torchvision.models.ResNet18_Weights
-        case _:
-            raise ValueError("invalid num_layers for resnet")
-    
-    match weights:
-        case "imagenet":
-            # TODO: how to init fc?
-            model = _resnet(weights = _weights)
-            #model.fc = torch.nn.Linear(512 * model.block.expansion, num_classes)
-            return model
-        case _:
-            return _resnet(num_classes = num_classes)
+    elif weights_init == "path":
+        weights = fs.get_valid_file_err(weights_param)
+        return torch.load(weights, weights_only=True)
+
+    elif weights_init == "url":
+        assert isinstance(weights_param, str), f"config error, expected :weights_param to be a valid url when :weights is url, got {weights_param}"
+        raise NotImplementedError("loading weights from random URLs is not implemented yet")

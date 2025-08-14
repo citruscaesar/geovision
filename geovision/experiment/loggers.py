@@ -95,16 +95,20 @@ class ClassificationLogger(Callback):
         self.monitor_metric_name: str = config.metric_name
 
         self.metrics = torchmetrics.MetricCollection({
-            "precision": config.get_metric("precision"),
-            "recall": config.get_metric("recall"),
-            "f1": config.get_metric("f1"),
-            "iou": config.get_metric("iou"),
-            "accuracy": config.get_metric("accuracy"),
-            "accuracy_top5": config.get_metric("accuracy", {"top_k": 5}),
+            "accuracy": config.get_metric("Accuracy"),
+            "precision": config.get_metric("Precision"),
+            "recall": config.get_metric("Recall"),
+            "f1": config.get_metric("F1Score"),
+            "iou": config.get_metric("JaccardIndex"),
         })
+        if self.dataset.task == "classification":
+            k = min(5, self.dataset.num_classes)
+            self.metrics.add_metrics({f"accuracy_top{k}": config.get_metric("Accuracy", {"top_k": k})})
+
         if config.metric_name not in self.metrics.keys():
-            self.metrics.add_metrics({config.metric_name: config.get_metric(config.metric)})
-        self.confusion_matrix = config.get_metric("confusion_matrix")
+            self.metrics.add_metrics({config.metric_name: config.get_metric(config.metric_name)})
+
+        self.confusion_matrix = config.get_metric("ConfusionMatrix")
 
     def calculate_steps(self, trainer: Trainer):
         if trainer.limit_train_batches != 1.0:
@@ -320,7 +324,7 @@ def get_csv_logger(config):
         save_dir=config.experiments_dir.parent.parent,
         name=config.experiments_dir.parent.name,
         version=config.experiments_dir.name,
-        flush_logs_every_n_steps=100,
+        flush_logs_every_n_steps=config.log_params["log_every_n_steps"],
     )
 
 def get_wandb_logger(config: ExperimentConfig):

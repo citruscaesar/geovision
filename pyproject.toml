@@ -74,4 +74,3 @@ addopts = "-s -v"
 [tool.ruff]
 line-length = 150 
 indent-width = 4
-

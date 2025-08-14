@@ -1,8 +1,9 @@
+import torch
 import logging
 import warnings
+import argparse
 from dotenv import load_dotenv
 from lightning import Trainer
-#from torchvision.transforms import v2 as T  # type: ignore
 from geovision.io.local import FileSystemIO as fs
 from lightning.pytorch.profilers import PyTorchProfiler
 from geovision.experiment.config import ExperimentConfig
@@ -10,16 +11,18 @@ from geovision.data import ImageDatasetDataModule
 from geovision.models.interfaces import ClassificationModule
 from geovision.experiment.loggers import get_csv_logger, get_ckpt_logger, get_classification_logger
 
-# 1. Add options to change mode [fit, validate, test], select config.yaml, select profiling, delete logs dir before starting, to run.py
-# 2. Redirect [all] warnings to logfile, not to stdout
-
-def log_warnings(message, category, filename, lineno, file=None, line=None):
-    logging.warning(f"{filename} : {lineno} : {category.__name__}: {message}")
-warnings.showwarning = log_warnings
-
 if __name__ == "__main__":
     load_dotenv()
-    config = ExperimentConfig.from_yaml("config.yaml")
+    cli = argparse.ArgumentParser("training and evaluation script for geovision")
+    cli.add_argument("--mode", choices=["fit", "validate", "test"], required=True)
+    cli.add_argument("--config", default="config.yaml", help = "path to config.yaml")
+    cli.add_argument("--compile", action="store_true", help = "optimize with torch.compile")
+    cli.add_argument("--profile", action="store_true", help = "init profiler")
+    cli.add_argument("--reset_logs", action="store_true", help = "reset experiment logs directory (will also delete saved models)")
+    args = cli.parse_args()
+    print(args)
+
+    config = ExperimentConfig.from_yaml(args.config)
 
     logging.basicConfig(
         filename = f"{fs.get_new_dir(config.experiments_dir, "logs")}/logfile.log",
@@ -27,6 +30,14 @@ if __name__ == "__main__":
         format = "%(asctime)s : %(name)s : %(levelname)s : %(message)s",
         level = logging.INFO
     )
+    def log_warnings(message, category, filename, lineno, file=None, line=None):
+        logging.info(f"{filename} : {lineno} : {category.__name__} : {message}")
+    warnings.showwarning = log_warnings
+
+    if args.reset_logs:
+        import shutil
+        shutil.rmtree(config.experiments_dir)
+        config.experiments_dir.mkdir()
 
     loggers: list = list()
     loggers.append(csv_logger := get_csv_logger(config))
@@ -50,18 +61,19 @@ if __name__ == "__main__":
         scheduler_config_params=config.scheduler_config_params
     )
 
-    profiler = PyTorchProfiler(
-        dirpath=config.experiments_dir / "logs", 
-        filename="profiler",
-        export_to_chrome=True,
-    )
+    if args.compile:
+        model = torch.compile(model, fullgraph = True)
 
-    trainer = Trainer(logger=loggers, callbacks=callbacks, profiler=profiler, **config.trainer_params)
-    if config.trainer_task == "fit":
+    if args.profile:
+        config.trainer_params["profiler"] = PyTorchProfiler(dirpath=config.experiments_dir/"logs", filename="profiler", export_to_chrome=True)
+
+    trainer = Trainer(logger=loggers, callbacks=callbacks, **config.trainer_params)
+
+    if args.mode == "fit":
         run = trainer.fit
-    elif config.trainer_task == "validate":
+    elif args.mode == "validate":
         run = trainer.validate
-    elif config.trainer_task == "test":
+    elif args.mode == "test":
         run = trainer.test
     else:
         raise ValueError(f":trainer_task must be one of (fit, validate, test), got {config.trainer_task}")

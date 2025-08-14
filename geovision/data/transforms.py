@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 # Write custom Compose which takes in (image, mask), applies all transforms to the image, but does not apply
 # any of the radiometric, i.e. Color and ToDtype transfroms to Maks
 
-
 class SegmentationCompose(Transform):
     """applies a sequence of transforms while skipping over pixel(color) transforms, as they can mess up segmentation masks"""
 

@@ -208,7 +208,7 @@ class ImagenetETL:
         cls, 
         table: Literal["index", "corrupt", "synsets"], 
         src: Literal["archive", "imagefolder", "hdf5"], 
-        subset: Literal["imagenet_1k", "imagenet_100", "imagnette"],
+        subset: Literal["imagenet_1k", "imagenet_100", "imagenette"],
     ) -> pd.DataFrame:
 
         assert src in ("archive", "imagefolder", "hdf5", "litdata")
@@ -527,7 +527,7 @@ Imagenet1KIndexSchema = pa.DataFrameSchema(
         "image_path": pa.Column(str, coerce=True),
         "label_idx": pa.Column(int, pa.Check.isin(tuple(range(0, 1000)))),
         # TODO:
-        # check label synset is in wordnet 
+        # check label synset is in wordnet
         # check label str is one of the correct corresponding classnames
         # "label_synset": pa.Column(str, pa.Check.isin(ImagenetETL.wordnet.keys())),
         "label_str": pa.Column(str, pa.Check.isin(ImagenetETL.imagenet_class_names)),
@@ -575,7 +575,7 @@ class ImagenetImagefolderClassification(Dataset):
             image = self.config.eval_aug(image)
         return image, idx_row["label_idx"], idx_row["df_idx"]
 
-class ImagenetHDF5Classification(Dataset):
+class Imagenet_1K_MultiClass_HDF5(Dataset):
     name = "imagenet_1k"
     task = "classification"
     subtask = "multiclass"

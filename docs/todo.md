@@ -1,57 +1,73 @@
-### geovision/
-- [] use pixi instead of conda+poetry, remove poetry dependencies and recreate environment
-- [] use importlib to get constructors for experiment config
+### Optional Features 
+- [] automate periodic sync of metrics, ckpt weights, inference results, etc. over SSH and S3
+- [] cmd tool to plot live metrics from hdf (swmr)
+- [] switch to pixi with local venv
+- [] Redirect [all] warnings to logfile
 
-### geovision.experiment/
-- [x] add lr_warmup to scheduler
+### Training Optmization Features
 - [] add stocastic weight averaging
-- [x] add train_lr_epoch to experiment_logger, figure out where to read lr from litmodule.schedulers()[-1].get_last_lr()[0]
-- [] cmd tool to live plot metrics from csv / feather / hdf
-    -> test how metrics.csv looks when the training process has hiccups (like crashing, resuming from a ckpt, etc.)
-    -> if it looks good, write a script to sync the metrics.csv at a fixed time interval (e.g. 5sec) and update the graph
-    -> if not, figure out how to get a metrics.csv from experiment.h5 while it's being written to, or another .csv/.paraquet based ExperimentWriter class
-- [x] script to plot all metrics within a run (optionally to specified directory)
-    -> take project_name, run and (...) as args
-    -> option to list runs based on project names
-    -> default view should be the confusion matrix, loss and configured metric plots
-    -> option to plot a metric and compare it across runs
-
-### geovision.io/
-- [] Setup rsync + lsyncd for SSH file transfers and monitoring
-- [] Setup s5cmd to download datasets and sync (with inotify?) ckpts and weights
-
-### geovision.models/ 
-- [x] write loaded config to hparams.yaml at the beginning of each run (pl_module.save_hyperparameters())
-- [] list and add basic building blocks (e.g. vgg, residual, dense, mbconv)
-    -> as generalized as possible
-    -> add optional weight init, ideally external to the class itself
-    -> expect or not expect to downsample/upsample the images
-- [] add commonly used architectures as generally as possible
-    -> each layer should have a unique name and be accessible from the outside (important for attribution)
-- [x] add constructors (fn not methods) to define a model using specific hyperparameters and load weights
-- [x] add common weight init methodology (from torchvision.models/fastai/timm/huggingface/self-made etc.)
-    -> port weights once and save for later use
-- [] use LightningModules to define common workflows, like Classification, GAN, VAE, MoCo etc. with training, evaluation and inference
-- [] add Potts and Normalized Cut Loss (for polygon regularization)
 - [] add Inplace Activated Batch Norm to reduce memory usage
+- [] Add options to change mode [fit, validate, test], select config.yaml, select profiling, delete logs dir before starting, to run.py
+- [] Fix logger for DDP, something to do with computing torchmetrics on a single node 
 
 ### geovision.analysis/
-- [x] attribution Methods like Feature Visualization, Guided Backprop, IG, GRAD-CAM, LIME, SHAP, etc.
+- [] attribution Methods like Feature Visualization, Guided Backprop, IG, GRAD-CAM, LIME, SHAP, etc.
     -> [] (optionally) implement from scratch without using Captum 
 - [] add color and class selectivity indices (read https://arxiv.org/pdf/1702.00382 and ConvNeXt v2)
-- [x] script to compute and store image statistics right in the metadata dataframe files, aggregate to compute dataset statistics
+- [] script to compute and store image statistics right in the metadata dataframe files, aggregate to compute dataset statistics
     -> load each image, calculate channel wise mean and variance and store in a dataframe -> concat with metadata to calculate aggregate stats dynamically for any split as properties
 - [] classical statistics based EDA for datasets to highlight geometry and spectral characteristics
 
 ### geovision.data/
-- [] add Inria
-- [] add Pascal VOC, MS COCO, OxfordIIITPets
-- [] massachussets, ISPRS, SpaceNet, CrowdAI 
 - [] add spatial sampler, at the image level (all images) and spatial level (georegistered scenes) [ref. Geo-Tiling for Semantic Segmentation]
     -> useful for inference time when entire images cannot be fed into the model
 - [] add FMoW, BigEarthNet and HySpec11k (for pretraining)
 - [] add PASTIS-R for agricultural analysis
-- [] figure out why CutMix nd MixUp aren't working
-- [] download Worldview Imagery from ESA Everyday (Quota of 4 images / day)
-- [] download PRISMA Imagery Everyday
-- [] download EnMap Imagery Everyday
+
+- [] Inria: Buildings + (OSM) Road Centerlines
+- [] City-OSM: Buildings + Roads
+- [] RAMP: Buildings
+- [] DeepGlobe Road Centerlines 
+- [] HySpecNet-11k
+- [] SpectralEarth 
+- [] So2Sat-POP 
+- [] Sen12Floods 
+
+- ISPRS Vaihingen and Potsdam
+- Massachusetts
+- Kenya
+- OpenCities
+- Crowd Mapping Challenge
+- LandCover.ai, Poland
+
+- Spacenet AOI + Subset 
+    - Rio: Buildings: Trash Labels
+    - Vegas: Buildings + Roads
+    - Paris: Buildings + Roads
+    - Shanghai: Buildings + Roads
+    - Khartoum: Buildings + Roads
+    - Atlanta: Buildings (Off-Nadir)
+    - Moscow: Roads
+    - Mumbai: Roads
+    - San Juan: Roads
+    - Dar Es Salaam: Roads
+    - Rotterdam: Buildings (MS+SAR)
+    - SN7: Buildings (101 AOIs Worldwide * 24 Tiles (1 per month) PlanetLabs)
+    - SN8: Flood Mapping (New Orleans, USA and Dernau, Germany)
+
+#. UrbanVision:
+    1. Building Segmentation (w/ Polygon Refinement).
+    2. Road Segmentation (Centerline Extraction).
+    3. Superresolution (Sentinel-2 or PlanetScope -> HighRes -> Polygons).
+    4. Polygon Alignment (for Supervision from CrowdSourced / Noisy Data).
+    5. Updating Maps over Time
+    5. Data Fusion using SAR Imagery / DEMs / for additional supervision.
+    6. Demonstrate Knowlege of Cadastal Mapping, Map Projections and Deep Learning.
+    7. Performance in Densely Populated Locations.
+
+#. AgriVision:
+    1. Hyperspectral + SAR Foundation Model for Agriculture
+    2. Crop Boundary Segmentation from High-Res Imagery
+    3. Crop Type and Yield Estimation from Satellite Image Time Series
+    4. Explain and Reason about Hyperspectral Model Predictions, Model Behaviour 
+    5. Deployment on Edge Systems like Drones / Satellites (Smoll Model)

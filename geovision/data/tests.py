@@ -20,7 +20,7 @@ from geovision.analysis.viz import plot_batch
 
 
 def test_dataset(dataset: Dataset, batch_size: int, limit_samples: int, save_plots: bool):
-    df = dataset.split_df.copy(deep=True).set_index("df_idx")
+    df = dataset.df.set_index("df_idx")
     image, label, df_idx = dataset[0]
 
     image_shape = image.shape

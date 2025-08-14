@@ -1,12 +1,13 @@
-project_name: !!str inria 
-run_name: !!str testing_everything 
-random_seed: !!int 42
+project_name: imagenet
+run_name: testing_dataloading 
+random_seed: 42
 
+trainer_task: fit 
 trainer_params:
-  max_epochs: !!int 1
-  precision: !!str '16-mixed' 
-  num_sanity_val_steps: !!int 0
-  enable_model_summary: !!bool True
+  max_epochs: 1 
+  precision: '16-mixed' 
+  num_sanity_val_steps: 0
+  enable_model_summary: True
 
 log_params:
   log_to_h5: False 
@@ -17,23 +18,22 @@ log_params:
     notes: "training from scratch" 
   log_every_n_steps: 10
   log_every_n_epochs: 1
-  log_models: True 
+  log_models: False 
 
-dataset_name: inria.Inria_Building_Segmentation_HDF5
+dataset_name: imagenet.Imagenet_1K_MultiClass_HDF5
 dataset_params:
   df: null 
-  tabular_sampler_name: "stratified" 
+  tabular_sampler_name: imagenet 
   tabular_sampler_params:
-    val_frac: 0.15 
-    test_frac: 0.15
-    split_on: location 
-  spatial_sampler_name: sliding_window
+    val_frac: 0.05 
+    split_on: label_str
+  spatial_sampler_name: null
   spatial_sampler_params:
-    tile_size: 256 
-    tile_stride: 200 
+    tile: []
+    stride: []
   spectral_sampler_name: null 
   spectral_sampler_params: null
-  batch_transform_name: null 
+  batch_transform_name: mixup 
   batch_transform_params: 
     alpha: 0.4
   transforms: |
@@ -41,49 +41,54 @@ dataset_params:
     from torchvision.transforms import v2 as T
     image_pre = T.Compose([
       T.ToImage(),
+      T.Resize(128),
       T.ToDtype(float32, scale = True),
-    ])
-    target_pre = T.Compose([
-      T.ToImage(),
-      T.ToDtype(float32, scale = False),
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
     train_aug = T.Compose([
+      T.RandomCrop(160),
+      T.AutoAugment(),
       T.RandomVerticalFlip(0.5),
       T.RandomHorizontalFlip(0.5),
+      T.ToDtype(float32, scale = True),
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    eval_aug = T.Identity()
+    eval_aug = T.Compose([
+      T.FiveCrop(224),
+      T.ToDtype(float32, scale = True),
+      T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+    target_pre = None 
   
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 16 
+  batch_size: 64
   gradient_accumulation: 1
-  num_workers: 3
+  num_workers: 8
   persistent_workers: False 
   pin_memory: True 
   prefetch_factor: 2
 
-model_name: ClassificationModule 
-model_params:
+model_name: geovision.models.modules.Classifier
+model_params: 
+  # a valid ckpt path means the litmodule state dict will be loaded from here, and :weights in the encoder/deocder params will be ignored
+  # however the ckpt is checked to contain these same encoder and decoders
   ckpt_path: null
-  encoder: geovision.models.resnet.ResNetFeatureExtractor
+  encoder_name: geovision.models.resnet.ResNetFeatureExtractor
   encoder_params:
-    layers: 18 
-    residual_block_name: basic 
+    layers: 50 
+    residual_block_name: bottleneck
     weights_init: torchvision 
-    weights_param: ResNet18_Weights.DEFAULT
-  decoder: geovision.models.unet.UNetDecoder
+    weights_param: ResNet50_Weights.DEFAULT
+  decoder_name: geovision.models.blocks.LinearDecoder
   decoder_params:
-    upsampling: bilinear
-    central_block: ResidualBlock
-    central_block_params:
-      residual_path: basic 
-      identity_path: identity 
-    conv_block: ResidualBlock
-    conv_block_params:
-      residual_path: basic 
-      identity_path: identity
+    in_features: 2048 
+    weights_init: torchvision
+    weights_param: ResNet50_Weights.DEFAULT
+
+
     
-metric_name: JaccardIndex 
+metric_name: Accuracy 
 metric_params: null
  
 criterion_name: CrossEntropyLoss

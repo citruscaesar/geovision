@@ -1,54 +1,96 @@
-from typing import Literal
-from collections import OrderedDict
+from typing import Any, Sequence, Callable, Literal
+
 import torch
+from collections import OrderedDict
 
-def __init__(self, in_ch: int, out_ch: int, upsampling: Literal["transposed", "nearest", "bilinear", "bicubic"]):
-        super().__init__()
-        # :in_ch are num_channels from previous layer
-        # encoder output will already have out_ch
-        self.skip = torch.nn.Conv1d(out_ch, out_ch//2, kernel_size=1, stride=1, padding=0, bias=False) 
-
-        self.upsample = torch.nn.Sequential() 
-        if upsampling == "transposed":
-            self.upsample.add_module("tconv_1", torch.nn.ConvTranspose2d(in_ch, out_ch//2, kernel_size=2, stride=2, padding=0))
-        else:
-            self.upsample.add_module("up_1", torch.nn.Upsample(scale_factor=2, mode = "upsampling"))
-            self.upsample.add_module("conv_1", torch.nn.Conv2d(in_ch, out_ch//2, kernel_size=3, stride=1, padding=1))
-        # else:
-            # self.upsample.add_module("up_1", torch.nn.)
-    
-    def forward(self, x: torch.Tensor, skip_x: torch.Tensor) -> torch.Tensor:
-        out = torch.concat([self.skip(skip_x), self.upsample(x)], dim = 1)
-        # spatially upsample x to 2x 
-        # spectrally downsample x to x/4 
-        # spectrally downsample skip_x to skip_x/2
-        # spectrally concat x/4 and skip_x/2 and project to x 
-
-class CentralUnetBlock(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-
-class UNetDecoder(torch.nn.Module):
+class UNetDecoderBlock(torch.nn.Module):
     def __init__(
             self, 
-            out_channels: int,
-            channels_per_layer: list[int], 
+            in_ch: int, 
+            out_ch: int, 
+            upsampling: str,
+            upsampling_factor: int,
+            conv_block: Callable[..., torch.nn.Module],
+            conv_block_params: dict[str, Any]
+        ):
+        super().__init__()
+        assert upsampling in ("transposed", "bilinear", "nearest", "bicubic")
+        assert isinstance(upsampling_factor, int) and upsampling_factor >= 1
+
+        self.reproj =  torch.nn.Conv2d(in_ch*2, out_ch, kernel_size = 1, stride = 1, padding = 0, bias = False)
+        if upsampling_factor == 1:
+            self.upsample = torch.nn.Identity()
+        else:
+            if upsampling == "transposed":
+                self.upsample = torch.nn.Sequential(OrderedDict({
+                    "tconv" : torch.nn.ConvTranspose2d(out_ch, out_ch, upsampling_factor, upsampling_factor, bias = False),
+                    "act" : torch.nn.ReLU(inplace=True),
+                    "norm" : torch.nn.BatchNorm2d(out_ch),
+                }))
+            else:
+                self.upsample = torch.nn.Upsample(scale_factor=upsampling_factor, mode=upsampling)
+        self.conv = conv_block(in_ch = out_ch, out_ch = out_ch, **conv_block_params)
+
+    def forward(self, x: torch.Tensor, skip_x: torch.Tensor) -> torch.Tensor:
+        # assert x.shape == skip_x.shape
+        # N x [in_ch, in_ch] x H x W -> N x out_ch x 2H x 2W
+        x = torch.cat((x, skip_x), dim = 1)
+        x = self.reproj(x)
+        x = self.upsample(x)
+        x = self.conv(x)
+        return x
+
+class UNetDecoder(torch.nn.Module):
+    # NOTE: UNet: encoder + central_block + decoder [encoder and decoder are symmetric in tensor dimensions]
+    # NOTE: encoder: (in_ch x H x W) -> (C' x H' x W') [every encoder layer has its own output channels]
+    # NOTE: central_block: (C' x H' x W') -> (C' x H' x W') [on the output of the last encoder layer]
+    # NOTE: decoder: (C' x H' x W') -> (out_ch x H x W)
+    def __init__(
+        self, 
+        out_ch: int,
+        layer_ch: Sequence[int], 
+        layer_up: Sequence[int],
+        upsampling: Literal["transposed", "bilinear", "nearest", "bicubic"],
+        central_block: Callable[..., torch.nn.Module],
+        central_block_params: dict[str, Any],
+        conv_block: Callable[..., torch.nn.Module],
+        conv_block_params: dict[str, Any],
     ):
         super().__init__()
+        assert isinstance(layer_ch, Sequence) # (conv_1_ch, conv_2_ch, conv_3_ch, conv_4_ch, conv_5_ch)
+        assert isinstance(layer_up, Sequence) # (conv_1_up, conv_2_up, conv_3_up, conv_4_up, conv_5_up)
+        assert len(layer_ch) == len(layer_up)
+        assert callable(central_block)
+        assert isinstance(central_block_params, dict)
+        assert callable(conv_block) 
+        assert isinstance(conv_block_params, dict)
 
-        assert isinstance(channels_per_layer, list)
-        assert len(channels_per_layer) == 5
-        conv_5_channels, conv_4_channels, conv_3_channels, conv_2_channels, conv_1_channels = channels_per_layer
-    
-        central_layers = channels_per_layer[4] // 2
+        # print(f"central_block: in_ch = {layer_ch[-1]}, out_ch = {layer_ch[-1]}")
+        self.central_block = central_block(in_ch = layer_ch[-1], out_ch = layer_ch[-1], **central_block_params) 
 
-        self.central_block = torch.nn.Sequential(OrderedDict([
-            ("pool_1", torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)) # spatial down
-            ("conv_1", torch.nn.Conv2d(conv_5_channels, conv_5_channels*2, 1, 1, 0, bias = False)), # spectral up 
-            ("conv_2", torch.nn.Conv2d(conv_5_channels*2, conv_5_channels, 1, 1)) # spectral down
-            ("up_1", torch.nn.Upsample(scale_factor=2, mode = "nearest")) # spatial up
-        ]))
+        # print(f"conv_0: in_ch = {layer_ch[0]}, out_ch = {out_ch}")
+        self.conv_0 = conv_block(in_ch = layer_ch[0], out_ch = out_ch, **conv_block_params)
 
-    def forward(self, x_1, x_2, x_3, x_4, x_5):
-        d_4 = self.central_block(x_5)
+        layer_ch = [layer_ch[0], *layer_ch] # (conv_1_ch, conv_1_ch, conv_2_ch, conv_3_ch, conv_4_ch, conv_5_ch)
+        for idx in range(1, len(layer_ch)): # idx = (1, 2, 3, 4, 5)
+            # print(f"conv_{idx}: in_ch / skip_ch = {layer_ch[idx]}, out_ch = {layer_ch[idx-1]}, upsampling_factor: {layer_up[idx-1]}")
+            setattr(self, f"conv_{idx}", UNetDecoderBlock(
+                in_ch=layer_ch[idx], out_ch=layer_ch[idx-1], upsampling=upsampling, upsampling_factor=layer_up[idx-1], 
+                conv_block=conv_block, conv_block_params=conv_block_params)
+            ) 
+            # self.conv_0 = UNetDecoderBlock(in_ch = conv_1_ch, out_ch = out_ch)
+            # self.conv_1 = UNetDecoderBlock(in_ch = conv_1_ch, out_ch = conv_1_ch)
+            # self.conv_2 = UNetDecoderBlock(in_ch = conv_2_ch, out_ch = conv_1_ch) 
+            # self.conv_3 = UNetDecoderBlock(in_ch = conv_3_ch, out_ch = conv_2_ch) 
+            # self.conv_4 = UNetDecoderBlock(in_ch = conv_4_ch, out_ch = conv_3_ch) 
+            # self.conv_5 = UNetDecoderBlock(in_ch = conv_5_ch, out_ch = conv_4_ch) 
         
+    def forward(self, *args):
+        # args = x_5, x_4, x_3, x_2, x_1
+        x = self.central_block(args[0]) # x = self.central_block(x_5)
+        # print("central_block out: ", x.shape)
+        for idx in range(len(args), 0, -1): # idx = (5, 4, 3, 2, 1)
+            # print(f"conv_{idx} in", "x:", x.shape, f"skip_x ({-idx}):", args[-idx].shape)
+            x = getattr(self, f"conv_{idx}")(x, args[-idx]) # x = self.conv_{idx}(x, x_{idx})
+            # print(f"conv_{idx} out", x.shape)
+        return self.conv_0(x)

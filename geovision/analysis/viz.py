@@ -1,79 +1,77 @@
-# from typing import Optional, Sequence
-# from numpy.typing import NDArray
+from typing import Optional, Sequence
+from numpy.typing import NDArray
 
-# import h5py
-# import numpy as np
-# import pandas as pd
-# from pathlib import Path
-# from matplotlib import pyplot as plt
-# from matplotlib.figure import Figure
-# from matplotlib.axes import Axes 
-# from matplotlib.gridspec import GridSpec
-# from matplotlib.widgets import CheckButtons
-# from matplotlib.colors import ListedColormap, is_color_like
-# from matplotlib.cm import tab20b, tab20c, Blues
-# from matplotlib.lines import Line2D
-# from matplotlib.table import Table
+import h5py
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes 
+from matplotlib.gridspec import GridSpec
+from matplotlib.widgets import CheckButtons
+from matplotlib.colors import ListedColormap, is_color_like
+from matplotlib.cm import tab20b, tab20c, Blues
+from matplotlib.lines import Line2D
+from matplotlib.table import Table
 
 # from geovision.data import Dataset
 # from geovision.experiment.config import ExperimentConfig
 # #from geovision.experiment.utils import get_classification_metrics_df, get_classification_metrics_dict
 
-# def get_standardized_image(image):
-    # return (image - image.mean()) / image.std()
+def get_standardized_image(image):
+    return (image - image.mean()) / image.std()
 
-# def get_normalized_image(image):
-    # return (image - image.min()) / (image.max() - image.min())
+def get_normalized_image(image):
+    return (image - image.min()) / (image.max() - image.min())
 
-# def plot_classification_sample(ax: Axes, image, label_idx, label_str, ds_idx):
-    # image = get_normalized_image(image)
-    # ax.imshow(image.permute(1,2,0))
-    # ax.set_title(f"{label_str}({label_idx})[{ds_idx}]", fontsize = 10)
-    # ax.axis("off")
+def plot_classification_sample(ax: Axes, image, label_idx, label_str, ds_idx):
+    image = get_normalized_image(image)
+    ax.imshow(image.permute(1,2,0))
+    ax.set_title(f"{label_str}({label_idx})[{ds_idx}]", fontsize = 10)
+    ax.axis("off")
 
-# def plot_segmentation_sample(ax, image, label, ds_idx):
-    # ax.imshow(image.permute(1,2,0))
-    # ax.imshow(label.argmax(0), alpha = 0.5, cmap = "Reds_r")
-    # ax.set_title(f"idx: {ds_idx}")
+def plot_segmentation_sample(ax, image, label, ds_idx):
+    ax.imshow(image.permute(1,2,0).numpy().astype(np.uint8))
+    ax.imshow(label.argmax(0), alpha = 0.5, cmap = "Reds")
+    ax.set_title(f"idx: {ds_idx}")
 
-# def plot_sample_top_k_logits(ax: Axes, logits: NDArray, label: int | NDArray, top_k: int = 0):
-    # # plot bar chart with logits, highlight the correct label with a different color bar
-    # pass
+def plot_sample_top_k_logits(ax: Axes, logits: NDArray, label: int | NDArray, top_k: int = 0):
+    # plot bar chart with logits, highlight the correct label with a different color bar
+    pass
 
-# def plot_sample(ax: Axes, dataset: Dataset, idx: Optional[int] = None):
-    # task = dataset.name.split('_')[-1]
-    # idx = np.random.randint(0, len(dataset)) if idx is None else idx
-    # image, label, ds_idx = dataset[idx]
-    # match task:
-        # case "classification":
-            # plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
-        # case "segmentation":
-            # plot_segmentation_sample(ax, image, label, ds_idx)
+def plot_sample(ax: Axes, dataset, idx: Optional[int] = None):
+    idx = np.random.randint(0, len(dataset)) if idx is None else idx
+    image, label, ds_idx = dataset[idx]
+    match dataset.task:
+        case "classification":
+            plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
+        case "segmentation":
+            plot_segmentation_sample(ax, image, label, ds_idx)
  
-# def plot_batch(dataset: Dataset, batch: tuple, batch_idx: int, save_to: Optional[Path] = None):
-    # task = dataset.name.split('_')[-1]
-    # images, labels, ds_idxs = batch
-    # n = len(images)
-    # assert n >= 2, f"batch_size must be at least 2, got {n}"
-    # nrows = int(np.around(np.sqrt(n)))
-    # ncols = int(np.ceil(n / nrows))
+def plot_batch(dataset, batch: tuple, batch_idx: int, save_to: Optional[Path] = None):
+    images, labels, ds_idxs = batch
+    n = len(images)
+    assert n >= 2, f"batch_size must be at least 2, got {n}"
+    nrows = int(np.around(np.sqrt(n)))
+    ncols = int(np.ceil(n / nrows))
 
-    # fig, axes = plt.subplots(nrows, ncols, figsize = (20, 20), layout = "tight")
-    # fig.suptitle(f"{dataset.name} :: batch: {batch_idx}", fontsize = 10)
-    # for idx, ax in enumerate(axes.ravel()):
-        # if idx < n: 
-            # image, label, ds_idx = images[idx], labels[idx], ds_idxs[idx]
-            # if task == "classification":
-                # plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
-            # elif task == "segmentation":
-                # plot_segmentation_sample(ax, image, label, ds_idx)
-        # ax.axis("off")
-    # if save_to is not None:
-        # fig.savefig(save_to/f"batch={batch_idx}.png")
-        # fig.clear()
-        # #plt.clf()
-        # #plt.cla()
-        # plt.close()
+    fig, axes = plt.subplots(nrows, ncols, figsize = (20, 20), layout = "tight")
+    fig.suptitle(f"{dataset.name} :: batch: {batch_idx}", fontsize = 10)
+    for idx, ax in enumerate(axes.ravel()):
+        if idx < n: 
+            image, label, ds_idx = images[idx], labels[idx], ds_idxs[idx]
+            if dataset.task == "classification":
+                plot_classification_sample(ax, image, label, dataset.class_names[label], ds_idx)
+            elif dataset.task == "segmentation":
+                plot_segmentation_sample(ax, image, label, ds_idx)
+        ax.axis("off")
+    if save_to is not None:
+        fig.savefig(save_to/f"batch={batch_idx}.png")
+        fig.clear()
+        #plt.clf()
+        #plt.cla()
+        plt.close()
 
 # def get_confusion_matrix_plot(mat: NDArray, class_names: Optional[tuple] = None, title: Optional[tuple] = None) -> Figure:
     # fig, ax = plt.subplots(1, 1, figsize = (15, 5), layout = "constrained")

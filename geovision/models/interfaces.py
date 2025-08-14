@@ -1,10 +1,12 @@
-from typing import Any, Optional  
+from typing import Any, Optional, Literal
 from collections.abc import Callable
 
 import torch
 import lightning
 
 from itertools import chain
+from importlib import import_module
+from geovision.models import blocks
 from geovision.io.local import FileSystemIO as fs
 
 # TODO: add option to selectively freeze model layers
@@ -13,63 +15,36 @@ from geovision.io.local import FileSystemIO as fs
 class ModelConfig:
     def __init__(
             self,
-            encoder_name: str, 
+            encoder: str, 
             encoder_params: dict[str, Any],
-            decoder_name: str,
+            decoder: str,
             decoder_params: dict[str, Any],
             ckpt_path: Optional[str] = None
         ):
-        self.encoder_constructor = self._get_encoder_constructor(encoder_name)
-        self.decoder_constructor = self._get_decoder_constructor(decoder_name)
-
-        # get ckpt path
-        if ckpt_path is not None:
-            self.ckpt_path = fs.get_valid_file_err(ckpt_path)
-            # ckpt: dict = torch.load(self.ckpt_path)
-            # assert ckpt["encoder_name"] == encoder_name, f"config error (name mismatch), expected encoder named {ckpt["encoder_name"]}"
-            # assert ckpt["decoder_name"] == decoder_name, f"config error (name mismatch), expected decoder named {ckpt["decoder_name"]}"
-            # del ckpt
-        else:
-            self.ckpt_path = None
+        self.encoder_constructor = self._get_constructor(encoder)
+        self.decoder_constructor = self._get_constructor(decoder)
 
         assert isinstance(encoder_params, dict), f"config error (invalid type), expected :encoder_params to be dict, got {type(encoder_params)}"
-        #if self.ckpt_path is None:
-            #assert encoder_params.get("weights") is not None, \
-                #"config error, :weights cannot be None"
-            #weights_path = encoder_params.get("weights_path")
-            #if weights_init is not None:
-                #assert weights_path is None, "config error, expected either :weights_init or :weights_path to be provided, got both"
-                #assert isinstance(weights_init, str), f"config error (invalid type), expected :weights_init to be str, got {type(weights_init)}"
-                #assert weights_init in self.encoder_constructor.weight_init_strategies, "config error (not impl.)"
-            #else: 
-                #assert weights_path is not None, "config error, expected either :weights_init or :weights_path to be provided, got neither"
-                #assert fs.is_valid_file(weights_path), f"config error (invalid path), {weights_path} doesn't point to a valid location on local fs "
-        self.encoder_name = encoder_name 
-        self.encoder_params = encoder_params  
+        for k in encoder_params.keys():
+            if k.endswith("_block"):
+                encoder_params[k] = getattr(blocks, encoder_params[k])
+        self.encoder_params = encoder_params 
 
         assert isinstance(decoder_params, dict), f"config error (invalid type), expected :decoder_params to be dict, got {type(decoder_params)}"
-        self.decoder_name = decoder_name 
+        for k in decoder_params.keys():
+            if k.endswith("_block"):
+                decoder_params[k] = getattr(blocks, decoder_params[k])
         self.decoder_params = decoder_params
+
+        if ckpt_path is not None:
+            self.ckpt_path = fs.get_valid_file_err(ckpt_path)
+        else:
+            self.ckpt_path = None
+        
+    def _get_constructor(self, name: str) -> torch.nn.Module:
+        name = name.split('.') 
+        return getattr(import_module('.'.join(name[:-1])), name[-1])
     
-        # TODO: check decoder params
-
-    def _get_encoder_constructor(self, name: str) -> torch.nn.Module:
-        match name:
-            case "resnet":
-                from .resnet import ResNetFeatureExtractor
-                return ResNetFeatureExtractor 
-            case _:
-                raise AssertionError(f"config error (not implemented), got {name}")
-
-    def _get_decoder_constructor(self, name: str) -> torch.nn.Module:
-        match name:
-            case "linear":
-                return torch.nn.Linear
-            case "lazy_linear":
-                return torch.nn.LazyLinear
-            case _:
-                raise AssertionError(f"config error (not implemented), got {name}")
-
 class ClassificationModule(lightning.LightningModule):
     def __init__(
             self,
@@ -88,6 +63,18 @@ class ClassificationModule(lightning.LightningModule):
 
         super().__init__()
         self.encoder = model_config.encoder_constructor(**model_config.encoder_params)
+
+        if "Linear" in model_config.decoder_constructor.__qualname__:
+            self.forward = self._clf_forward
+
+        elif "UNet" in model_config.decoder_constructor.__qualname__:
+            model_config.decoder_params["layer_ch"] = self.encoder._out_ch_per_layer 
+            model_config.decoder_params["layer_up"] = self.encoder._downsampling_per_layer
+            self.forward = self._unet_forward
+
+        else:
+            NotImplementedError(f"expected :decoder to be Linear or Unet, got {model_config.decoder_constructor.__qualname__}")
+        
         self.decoder = model_config.decoder_constructor(**model_config.decoder_params)
         self.criterion = criterion_constructor(**criterion_params)
 
@@ -100,18 +87,21 @@ class ClassificationModule(lightning.LightningModule):
         self.warmup_scheduler_params = warmup_scheduler_params
         self.scheduler_config_params = scheduler_config_params
 
+        if model_config.ckpt_path is not None:
+            self.load_from_checkpoint(model_config.ckpt_path)
+
         self.save_hyperparameters({
-            "encoder": model_config.encoder_name, 
+            "encoder": model_config.encoder_constructor.__qualname__, 
             "encoder_params": model_config.encoder_params,
-            "decoder": model_config.decoder_name,
+            "decoder": model_config.decoder_constructor.__qualname__,
             "decoder_params": model_config.decoder_params,
-            "criterion": criterion_constructor.__name__,
+            "criterion": criterion_constructor.__qualname__,
             "criterion_params": criterion_params,
-            "optimizer": optimizer_constructor.__name__,
+            "optimizer": optimizer_constructor.__qualname__,
             "optimizer_params": optimizer_params,
-            "lr_scheduler": lr_scheduler_constructor.__name__ if lr_scheduler_constructor is not None else '',
+            "lr_scheduler": lr_scheduler_constructor.__qualname__ if lr_scheduler_constructor is not None else '',
             "lr_scheduler_params": lr_scheduler_params,
-            "warmup_scheduler": warmup_scheduler_constructor.__name__ if warmup_scheduler_constructor is not None else '',
+            "warmup_scheduler": warmup_scheduler_constructor.__qualname__ if warmup_scheduler_constructor is not None else '',
             "warmup_scheduler_params": warmup_scheduler_params,
             "warmup_steps": warmup_steps,
             "scheduler_config_params": scheduler_config_params
@@ -138,6 +128,16 @@ class ClassificationModule(lightning.LightningModule):
             config["lr_scheduler"] = {"scheduler": get_warmup_scheduler()} | self.scheduler_config_params 
 
         return config
+    
+    def _clf_forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.decoder(self.encoder(images))
+    
+    def _unet_forward(self, images: torch.Tensor) -> torch.Tensor:
+        encoder_outputs = list() 
+        for layer in self.encoder.children():
+            images = layer(images)
+            encoder_outputs.append(images)
+        return self.decoder(*reversed(encoder_outputs))
 
     def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C'
@@ -147,9 +147,6 @@ class ClassificationModule(lightning.LightningModule):
         preds = self.forward(images) 
         loss = self.criterion(preds, labels)
         return preds, labels, loss
-
-    def forward(self, images: torch.Tensor) -> Any:
-        return self.decoder(self.encoder(images).flatten(1))
 
     def training_step(self, batch, batch_idx):
         preds, _, loss = self._forward(batch)
