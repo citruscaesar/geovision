@@ -9,14 +9,14 @@ import pandas as pd
 from pathlib import Path
 from functools import cache
 from itertools import product
-from pandera import DataFrameSchema
+from torch.utils.data import DataLoader
 from lightning import LightningDataModule
+from pandera.pandas import DataFrameSchema
 from torch.utils.data import default_collate
+from geovision.io.local import FileSystemIO as fs 
 from torchvision.transforms.v2 import Transform, Identity, CutMix, MixUp
 
-from torch.utils.data import DataLoader
-from geovision.io.local import FileSystemIO as fs 
-from litdata import StreamingDataLoader, StreamingDataset
+#from litdata import StreamingDataLoader, StreamingDataset
 
 logger = logging.getLogger(__name__)
 
@@ -124,18 +124,21 @@ class DatasetConfig:
         assert isinstance(val_frac, float), f"config error (invalid type), expected :val_frac to be of type float, got {type(val_frac)}"
         assert test_frac + val_frac > 0 and test_frac + val_frac < 1, \
             f"config error (invalid value), expected 0 < :test_frac + :val_frac < 1, got :test_frac={test_frac} and :val_frac={val_frac}"
+        
 
         test = (
             index_df
             .groupby(split_on, group_keys=False)
-            .apply(lambda x: x.sample(frac=test_frac, random_state=random_seed, axis=0), include_groups=True)
+            [index_df.columns]
+            .apply(lambda x: x.sample(frac=test_frac, random_state=random_seed, axis=0))
             .assign(split = "test")
         ) 
         val = (
             index_df
             .drop(test.index, axis = 0)
             .groupby(split_on, group_keys=False)
-            .apply(lambda x: x.sample(frac=val_frac/(1-test_frac), random_state=random_seed, axis=0), include_groups=True) # type: ignore
+            [index_df.columns]
+            .apply(lambda x: x.sample(frac=val_frac/(1-test_frac), random_state=random_seed, axis=0)) # type: ignore
             .assign(split="val")
         )
 
@@ -385,6 +388,7 @@ class Dataset:
     config: DatasetConfig  # type: ignore # noqa: F821
     schema: DataFrameSchema
     loader: Callable[..., pd.DataFrame]
+    metadata_group_prefix: Optional[str] # prefix to hdf5 keys
 
     valid_splits = ("train", "val", "test", "trainvaltest", "all")
     valid_tasks = ("classification", "segmentation", "super_resolution", "detection", "unsupervised")
@@ -395,56 +399,20 @@ class Dataset:
     valid_detection_subtasks = ()
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"], config: Optional[DatasetConfig]) -> None: # type: ignore  # noqa: F821
-        # Check init args
-        logger.info(f"attempting to init {self.name}_{self.storage}_{self.task}_{self.subtask}")
-        assert hasattr(self, "name") and isinstance(self.name, str)
-        assert hasattr(self, "task") and self.task in self.valid_tasks 
-        assert hasattr(self, "subtask") and self.subtask in getattr(self, f"valid_{self.task}_subtasks")
-        assert hasattr(self, "storage") and self.storage in self.valid_storage_formats
-        assert hasattr(self, "class_names") and isinstance(self.class_names, tuple)
-        assert hasattr(self, "num_classes") and isinstance(self.num_classes, int) # and self.num_classes == len(self.class_names)
-
-        # Verify files exist on 
-        assert hasattr(self, "root")
-        if self.storage in ("imagefolder", "litdata"):
-            fs.get_valid_dir_err(self.root, empty_ok = False)# self.root.is_dir()
-        elif self.storage == "hdf5" :
-            assert self.root.is_file() 
-
-        assert hasattr(self, "config") and isinstance(self.config, DatasetConfig) 
-        assert hasattr(self, "schema") and isinstance(self.schema, DataFrameSchema) 
-        assert hasattr(self, "loader") and callable(self.loader) 
-
-        assert split in self.valid_splits, f"value error (invalid), expected :split to be one of {self.valid_splits}, got {split}"
-        self.split = split
-
-        if config is not None:
-            self.config = config
+        self.__check_init_args()
+        self.__check_storage()
+        self.__check_split(split)
+        self.__check_config(config)
 
         if self.config.df is None:
-            df = self.loader("index", self.storage, self.name) 
-            for sampler_name in ("tabular", "spatial", "spectral", "temporal"):
-                sampler: Callable = getattr(self.config, f"{sampler_name}_sampler")
-                params: dict = getattr(self.config, f"{sampler_name}_sampler_params")
-                if sampler is not None:
-                    logger.info(f"found {sampler_name} sampling, using fn: {sampler} and params: {params}")
-                    if sampler_name != "tabular":
-                        params[f"{sampler_name}_df"] = self.loader(sampler_name, self.storage, self.name)
-                    df = sampler(index_df = df, **params)
-                    logger.info(f"successfully applied {sampler_name} sampling")
-                else:
-                    logger.info(f"did not find {sampler_name} sampler, skipping")
+            df = self.loader(self.metadata_group_prefix + "index", self.storage, self.name) 
+            df = self.__resample_df(df)
         else:
             df = self.config.df
         self.index_df = self.schema(df)
 
-        logger.info(
-            f"""
-                successfully init {self.name}_{self.storage}_{self.task}_{self.subtask} with augmentations image_pre = {self.config.image_pre}\n
-                target_pre = {self.config.target_pre}\n train_aug = {self.config.train_aug}\neval_aug = {self.config.eval_aug}
-            """
-        )
-       
+        self.__log_success()
+      
     def __repr__(self) -> str:
         return '\n'.join([
             f"{self.name} dataset for {self.subtask} {self.task}",
@@ -494,6 +462,73 @@ class Dataset:
                 df["mask_path"] = df["mask_path"].apply(lambda x: str(Path(self.root, x)))
         return df
 
+    def __check_init_args(self):
+        logger.info(f"attempting to init {self.name}_{self.storage}_{self.task}_{self.subtask}")
+        assert hasattr(self, "name") and isinstance(self.name, str)
+        assert hasattr(self, "task") and self.task in self.valid_tasks 
+        assert hasattr(self, "subtask") and self.subtask in getattr(self, f"valid_{self.task}_subtasks")
+        assert hasattr(self, "storage") and self.storage in self.valid_storage_formats
+        assert hasattr(self, "class_names") and isinstance(self.class_names, tuple)
+        assert hasattr(self, "num_classes") and isinstance(self.num_classes, int) # and self.num_classes == len(self.class_names)
+        assert hasattr(self, "config") and isinstance(self.config, DatasetConfig) 
+        assert hasattr(self, "schema") and isinstance(self.schema, DataFrameSchema) 
+        assert hasattr(self, "loader") and callable(self.loader) 
+
+        assert hasattr(self, "metadata_group_prefix")
+        if self.metadata_group_prefix is None: 
+            self.metadata_group_prefix = str()
+        assert isinstance(self.metadata_group_prefix, str)
+        assert self.metadata_group_prefix.endswith('/')
+
+    def __check_storage(self):
+        assert hasattr(self, "root")
+        if self.storage in ("imagefolder", "litdata"):
+            fs.get_valid_dir_err(self.root, empty_ok = False) # self.root.is_dir()
+        elif self.storage == "hdf5" :
+            assert self.root.is_file() 
+    
+    def __check_split(self, split):
+        assert split in self.valid_splits, f"value error (invalid), expected :split to be one of {self.valid_splits}, got {split}"
+        self.split = split
+    
+    def __check_config(self, config: Optional[DatasetConfig]):
+        # by default self.config should be a DatasetConfig, which is overridden if a :config is provided as an argument
+        if config is not None:
+            self.config = config
+    
+    def __resample_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        for sampler_name in ("tabular", "spatial", "spectral", "temporal"):
+
+            sampler: Callable = getattr(self.config, f"{sampler_name}_sampler") 
+
+            if sampler is not None:
+                params: dict = getattr(self.config, f"{sampler_name}_sampler_params")
+                logger.info(f"found {sampler_name} sampling, using fn: {sampler} and params: {params}")
+
+                if sampler_name != "tabular":
+                    # if any associated metadata is needed but hasn't been loaded yet
+                    if params.get(f"{sampler_name}_df") is None:
+                        try:
+                            params[f"{sampler_name}_df"] = self.loader(self.metadata_group_prefix + sampler_name, self.storage, self.name)
+                        except Exception:
+                            params[f"{sampler_name}_df"] = None 
+
+                # apply resampling
+                df = sampler(index_df = df, **params)
+                logger.info(f"successfully applied {sampler_name} sampling")
+            else:
+                logger.info(f"did not find {sampler_name} sampler, skipping")
+
+        return df
+
+    def __log_success(self):
+        logger.info(
+            f"""
+                successfully init {self.name}_{self.storage}_{self.task}_{self.subtask} with augmentations image_pre = {self.config.image_pre}\n
+                target_pre = {self.config.target_pre}\n train_aug = {self.config.train_aug}\neval_aug = {self.config.eval_aug}
+            """
+        )
+ 
 class ImageDatasetDataModule(LightningDataModule):
     def __init__(self, dataset_constructor: Dataset, dataset_config: DatasetConfig, dataloader_config: DataLoaderConfig) -> None:
         super().__init__()
@@ -521,29 +556,29 @@ class ImageDatasetDataModule(LightningDataModule):
     def test_dataloader(self) -> EVAL_DATALOADERS:
         return DataLoader(self.test_dataset, shuffle = False, **self.dataloader_config.params)
 
-class StreamingDatasetDataModule(LightningDataModule):
-    def __init__(self, dataset_constructor: Dataset, dataset_config: DatasetConfig, dataloader_config: DataLoaderConfig) -> None:
-        super().__init__()
-        self.dataset_constructor = dataset_constructor
-        self.dataset_config = dataset_config
-        self.dataloader_config = dataloader_config
+# class StreamingDatasetDataModule(LightningDataModule):
+    # def __init__(self, dataset_constructor: Dataset, dataset_config: DatasetConfig, dataloader_config: DataLoaderConfig) -> None:
+        # super().__init__()
+        # self.dataset_constructor = dataset_constructor
+        # self.dataset_config = dataset_config
+        # self.dataloader_config = dataloader_config
 
-    def setup(self, stage):
-        _valid_stages = ("fit", "validate", "test", "predict")
-        if stage not in _valid_stages:
-            raise ValueError(f":stage must be one of {_valid_stages}, got {stage}")
-        if stage in ("fit", "validate"):
-            self.val_dataset: StreamingDataset = self.dataset_constructor("val", self.dataset_config) 
-            if stage == "fit":
-                self.train_dataset: StreamingDataset = self.dataset_constructor("train", self.dataset_config) 
-        if stage == "test":
-            self.test_dataset: StreamingDataset = self.dataset_constructor("test", self.dataset_config) 
+    # def setup(self, stage):
+        # _valid_stages = ("fit", "validate", "test", "predict")
+        # if stage not in _valid_stages:
+            # raise ValueError(f":stage must be one of {_valid_stages}, got {stage}")
+        # if stage in ("fit", "validate"):
+            # self.val_dataset: StreamingDataset = self.dataset_constructor("val", self.dataset_config) 
+            # if stage == "fit":
+                # self.train_dataset: StreamingDataset = self.dataset_constructor("train", self.dataset_config) 
+        # if stage == "test":
+            # self.test_dataset: StreamingDataset = self.dataset_constructor("test", self.dataset_config) 
 
-    def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return StreamingDataLoader(self.train_dataset, shuffle = True, **self.dataloader_config.params)
+    # def train_dataloader(self) -> TRAIN_DATALOADERS:
+        # return StreamingDataLoader(self.train_dataset, shuffle = True, **self.dataloader_config.params)
     
-    def val_dataloader(self) -> EVAL_DATALOADERS:
-        return StreamingDataLoader(self.val_dataset, shuffle = False, **self.dataloader_config.params)
+    # def val_dataloader(self) -> EVAL_DATALOADERS:
+        # return StreamingDataLoader(self.val_dataset, shuffle = False, **self.dataloader_config.params)
 
-    def test_dataloader(self) -> EVAL_DATALOADERS:
-        return StreamingDataLoader(self.test_dataset, shuffle = False, **self.dataloader_config.params)
+    # def test_dataloader(self) -> EVAL_DATALOADERS:
+        # return StreamingDataLoader(self.test_dataset, shuffle = False, **self.dataloader_config.params)

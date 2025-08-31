@@ -13,7 +13,7 @@ import pandas as pd
 import pandera as pa
 import rasterio as rio
 import geopandas as gpd
-import imageio.v3 as iio
+import imageio.v3 as iio  # noqa: F401
 import torchvision.transforms.v2 as T
 
 from tqdm import tqdm
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # image_patches: L2A (orthorectified, atmospherically corrected, absorption bands removed reflectance values) (202x128x128 little-endian int16) 
 
 class SpectralEarth:
-    local = Path.home() / "datasets" / "spectral_earth"
+    local: Path = Path.home() / "datasets" / "spectral_earth"
     num_bands = 202 # after removing water absorption bands
     
     @classmethod
@@ -102,18 +102,18 @@ class SpectralEarth:
             imagefolder_path = fs.get_valid_dir_err(cls.local, "imagefolder") 
             hdf5_path = fs.get_new_dir(cls.local / "hdf5")
 
-            args = [(hdf5_path, imagefolder_path, x, cls.load('index', 'imagefolder', x)) for x in ("cdl", "nlcd", "corine")]
+            args: list = [(hdf5_path, imagefolder_path, x, cls.load('index', 'imagefolder', x)) for x in ("cdl", "nlcd", "corine")]
 
-            with Pool(cpu_count()) as pool:
+            with Pool(processes=cpu_count()) as pool:
                 pool.starmap(cls._write_to_hdf, args)
     
     @staticmethod
     def _write_to_hdf(hdf5_path: Path, imagefolder_path: Path, name: str, df: pd.DataFrame):
         df.to_hdf(hdf5_path / f"spectral_earth_{name}.h5", key = name, mode = 'w')
 
-        with h5py.File(hdf5_path / f"spectral_earth_{name}.h5", mode = 'r+') as f:
-            images = f.create_dataset(f"{name}_images", shape = (len(df), 202, 128, 128), dtype = np.int16)
-            masks = f.create_dataset(f"{name}_masks", shape = (len(df), 128, 128), dtype = np.int16)
+        with h5py.File(name = hdf5_path / f"spectral_earth_{name}.h5", mode = 'r+') as f:
+            images: h5py.Dataset = f.create_dataset(f"{name}_images", shape = (len(df), 202, 128, 128), dtype = np.int16)
+            masks: h5py.Dataset = f.create_dataset(f"{name}_masks", shape = (len(df), 128, 128), dtype = np.int16)
 
             for idx, row in tqdm(df.iterrows(), total = len(df), desc = f"encoding {name}"):
                 with rio.open(imagefolder_path/"enmap"/f"{row["image_name"]}.tif") as raster:

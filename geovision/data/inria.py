@@ -10,28 +10,27 @@ import subprocess
 import multivolumefile
 
 import numpy as np
-import pandas as pd
-import pandera as pa
+
+import pandas as pd 
 import rasterio as rio
-import geopandas as gpd
 import imageio.v3 as iio
+import pandera.pandas as pa
 import torchvision.transforms.v2 as T
 
 from tqdm import tqdm
+from io import BytesIO
 from pathlib import Path
 from affine import Affine
-from shapely import Polygon
 from rasterio.crs import CRS
-from rasterio.features import sieve, shapes
 from geovision.io.local import FileSystemIO as fs 
 from torchvision.datasets.utils import download_url
-from skimage.measure import find_contours, approximate_polygon
 
 from geovision.data import Dataset, DatasetConfig
-from geovision.data.transforms import SegmentationCompose
+#from geovision.data.transforms import SegmentationCompose
 
 import logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 # NOTE:
 # preprocessing:
@@ -45,11 +44,21 @@ logger = logging.getLogger(__name__)
 class Inria:
     local = Path.home() / "datasets" / "inria"
     class_names = ("background", "building") 
+    
     loc_names = {
         "supervised": ("vienna", "tyrol-w", "austin", "chicago", "kitsap"),
         "unsupervised":  ("innsbruck", "tyrol-e", "bloomington", "sfo", "bellingham")
     } 
     identity_matrix = np.eye(2, dtype = np.float32)
+
+    index_df_schema = pa.DataFrameSchema(
+        columns={
+            "image_path": pa.Column(str, coerce=True),
+            "location": pa.Column(str, coerce=True),
+        },
+        index=pa.Index(int)
+    )
+
     default_config = DatasetConfig(
         random_seed=42,
         tabular_sampler_name="stratified",
@@ -131,7 +140,7 @@ class Inria:
                 .assign(image_height = 5000)
                 .assign(image_width = 5000)
                 .assign(location = lambda df: df["image_path"].apply(lambda x: ''.join([i for i in Path(x).stem if not i.isdigit()])))
-                .assign(mask_path = lambda df: df.apply(lambda x: x["image_path"].replace("images", "gt") if x["location"] in cls.loc_names["supervised"] else None, axis = "columns"))
+                .assign(mask_path = lambda df: df.apply(lambda x: str(x["image_path"]).replace("images", "gt") if x["location"] in cls.loc_names["supervised"] else None, axis = "columns"))
             )
             index_df = df[["image_path", "mask_path", "location"]]
             spatial_df = df[["image_height", "image_width", "x_off", "y_off", "x_res", "y_res", "crs"]]
@@ -150,7 +159,7 @@ class Inria:
             except OSError:
                 assert table in ("index", "spatial"), \
                     f"not implemented error, expected :table to be one of index or spatial, since this function cannot create {table} metadata"
-                image_paths = [x for x in fs.get_valid_dir_err(imagefolder_path).rglob("*.tif") if x.parent != "masks"]
+                image_paths = [x for x in fs.get_valid_dir_err(imagefolder_path).rglob("*.tif") if x.parent.name == "images"]
                 return _load_metadata(imagefolder_path/"metadata.h5", image_paths)
 
         elif src == "staging/archive":
@@ -173,6 +182,7 @@ class Inria:
             to: Literal["imagefolder", "hdf5"], 
             tile_size: Optional[int | tuple[int, int]] = None,
             tile_stride: Optional[int | tuple[int, int]] = None,
+            to_jpg: Optional[int] = None,
         ):
 
         assert src in ("staging/archive", "staging/imagefolder")
@@ -190,102 +200,25 @@ class Inria:
             assert isinstance(tile_size, Sequence) and len(tile_size) == 2
             assert isinstance(tile_stride, Sequence) and len(tile_stride) == 2
 
-        def _tile(index_df: pd.DataFrame, spatial_df: pd.DataFrame) -> pd.DataFrame:
-            return (
-                DatasetConfig.sliding_window_spatial_sampler(index_df, spatial_df, tile_size, tile_stride)
-                .merge(spatial_df, how = 'left', left_index=True, right_index=True)
-                .assign(x_off = lambda df: df.apply(lambda col: col["x_off"] + col["x_min"] * col["x_res"], axis = 1))
-                .assign(y_off = lambda df: df.apply(lambda col: col["y_off"] + col["y_min"] * col["y_res"], axis = 1))
-                .assign(image_height = tile_size[0])
-                .assign(image_width = tile_size[1])
-                .reset_index(drop = True)
-            )
-        
+        if to_jpg is not None:
+            assert isinstance(to_jpg, int) and to_jpg > 0 and to_jpg <= 95
+                
         if to == "imagefolder":
             imagefolder_path = fs.get_new_dir(cls.local, "imagefolder")
-            sup_images = fs.get_new_dir(imagefolder_path, "sup", "images")
-            sup_masks = fs.get_new_dir(imagefolder_path, "sup", "masks")
-            unsup_images = fs.get_new_dir(imagefolder_path, "unsup", "images")
-
+            
             if src == "staging/imagefolder":
                 staging_path = fs.get_valid_dir_err(cls.local, "staging")
                 if tile_size is None:
                     pass # move images from :local/staging to :local/imagefolder with appropriate directory names
                 else:
                     pass # load, tile and paste 
+
             elif src == "staging/archive":
                 archive_path = fs.get_valid_file_err(cls.local, "staging", "NEW2-AerialImageDataset.zip")
-
-                if tile_size is None:
-                    with zipfile.ZipFile(archive_path, mode = 'r') as archive:
-                        archive.extractall(imagefolder_path)
-                    shutil.move(imagefolder_path/"AerialImageDataset"/"test"/"images", unsup_images)
-                    shutil.move(imagefolder_path/"AerialImageDataset"/"train"/"images", sup_images)
-                    shutil.move(imagefolder_path/"AerialImageDataset"/"train"/"gt", sup_masks)
-                    shutil.rmtree(imagefolder_path/"AerialImageDataset")
-
-                    cls.load('index', 'archive', 'inria') \
-                    .assign(image_path = lambda df: df["image_path"].apply(lambda x: '/'.join(x.split('/')[-3:]).replace("train", "sup").replace("test", "unsup"))) \
-                    .assign(mask_path = lambda df: df["image_path"].apply(lambda x: x.replace("gt", "masks") if x is not None else None)) \
-                    .to_hdf(imagefolder_path/"metadata.h5", key = "index", mode = "w")
-
-                    cls.load('spatial', 'archive', 'inria').to_hdf(imagefolder_path/"metadata.h5", key = "spatial", mode = "r+")
-                
-                else:
-                    def _get_tile_path(prefix: Path, row: pd.DataFrame):
-                        grandparent_dir, parent_dir, filename = row["image_path"].split('/')[-3:]
-                        grandparent_dir = "unsup" if grandparent_dir == "test" else "sup"
-                        filename = f"{filename.removesuffix(".tif")}_{row["y_min"]}_{row["x_min"]}.tif"
-                        return prefix/grandparent_dir/parent_dir/filename
-
-                    index_df = cls.load('index', 'archive', 'inria')
-                    spatial_df = cls.load('spatial', 'archive', 'inria')
-                    tiled_df = _tile(index_df, spatial_df)
-
-                    # for each scene (5000x5000x3)
-                    for scene in tqdm(tiled_df["image_path"].unique()):
-
-                        # filter all tile rows from that scene  
-                        df = tiled_df[tiled_df["image_path"] == scene]
-
-                        # load the scene raster
-                        with rio.open(df["image_path"].iloc[0]) as raster:
-                            image = raster.read().transpose(1,2,0)
-                        
-                        # if the image has a corresponding mask, load that as well
-                        supervised = False
-                        if df["mask_path"].iloc[0] is not None:
-                            supervised = True
-                            with rio.open(df["mask_path"].iloc[0]) as raster:
-                                mask = raster.read().squeeze()
-
-                        kwargs = {'driver': 'GTiff', 'dtype': 'uint8', 'nodata': None, 'height': tile_size[0], 'width': tile_size[1]}
-
-                        # for each tile in scene 
-                        for i, row in df.iterrows():
-
-                            tile_kwargs = kwargs | {
-                                "fp": _get_tile_path(imagefolder_path, row), "mode": "w", "count": 3,
-                                "crs": CRS.from_epsg(row["crs"]), "transform": Affine(row["x_res"], 0, row["x_off"], 0, row["y_res"], row["y_off"])
-                            }
-
-                            with rio.open(**tile_kwargs) as raster:
-                                raster.write(cls.read_tile(image, row).transpose(2,0,1))
-
-                            if supervised:
-                                tile_kwargs["fp"] = Path(str(tile_kwargs["fp"]).replace("images", "masks"))
-                                tile_kwargs["count"] = 1
-                                with rio.open(**tile_kwargs) as raster:
-                                    raster.write(cls.read_tile(mask, row)[np.newaxis,:,:])
-
-                    tiled_df["image_path"] = tiled_df.apply(lambda row: _get_tile_path(imagefolder_path, row), axis = "columns")
-                    tiled_df["mask_path"] = tiled_df["image_path"].apply(lambda x: x.replace("gt", "masks") if x is not None else None)
-
-                    tiled_df[["image_path", "mask_path", "location"]].to_hdf(imagefolder_path/"metadata.h5", key = "index", mode = "w")
-                    tiled_df.drop(columns=["image_path", "mask_path", "location"]).to_hdf(imagefolder_path/"metadata.h5", key = "spatial", mode = "r+")
+                cls.__staging_archive_to_imagefolder(archive_path, imagefolder_path, tile_size, tile_stride)
                     
         elif to == "hdf5":
-            hdf5_path = fs.get_new_dir(cls.local, "hdf5") / "inria.h5"
+            hdf5_path = fs.get_new_dir(cls.local, "hdf5") / "inria_jpeg.h5"
 
             if src == "staging/archive":
                 archive_path = fs.get_valid_file_err(cls.local, "staging", "NEW2-AerialImageDataset.zip")
@@ -299,82 +232,7 @@ class Inria:
 
             elif src == "staging/imagefolder":
                 imagefolder_path = fs.get_valid_dir_err(cls.local, "staging")
-                index_df = cls.load("index", "staging/imagefolder", 'inria')
-                spatial_df = cls.load("spatial", "staging/imagefolder", 'inria')
-
-                if tile_size is None:
-                    sup_index_df = index_df[index_df["mask_path"].notna()].reset_index(drop = True)
-                    sup_spatial_df = spatial_df[index_df["mask_path"].notna()].reset_index(drop = True)
-
-                    unsup_index_df = index_df[index_df["mask_path"].isna()].drop(columns="mask_path").reset_index(drop=True)
-                    unsup_spatial_df = spatial_df[index_df["mask_path"].isna()].reset_index(drop = True)
-
-                    with h5py.File(hdf5_path, mode = 'w') as file:
-                        sup_images = file.create_dataset("sup/images", (180, 5000, 5000, 3), dtype = np.uint8)
-                        sup_masks = file.create_dataset("sup/masks", 180, dtype = h5py.special_dtype(vlen=np.uint8))
-
-                        sup_images.attrs["image_size"] = (5000,5000)
-                        for idx, row in tqdm(sup_index_df.iterrows(), total = 180):
-                            sup_images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
-                            sup_masks[idx] = cls.encode_binary_mask(iio.imread(imagefolder_path / row["mask_path"], extension=".tif"))
-                        
-                        unsup_images = file.create_dataset("unsup/images", (180, 5000, 5000, 3), dtype = np.uint8)
-                        unsup_images.attrs["image_size"] = (5000,5000)
-                        for idx, row in tqdm(unsup_index_df.iterrows(), total = 180):
-                            unsup_images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
-
-                    sup_index_df.drop(columns = "mask_path").to_hdf(hdf5_path, key = "sup/index", mode = 'r+')
-                    sup_spatial_df.to_hdf(hdf5_path, key = "sup/spatial", mode = 'r+')
-
-                    unsup_index_df.to_hdf(hdf5_path, key = "sup/index", mode = 'r+')
-                    unsup_spatial_df.to_hdf(hdf5_path, key = "unsup/spatial", mode = 'r+')
-
-                else:
-                    tiled_df = _tile(index_df, spatial_df)
-
-                    sup_tiled_df = tiled_df[tiled_df["mask_path"].notna()].reset_index(drop=True)
-                    unsup_tiled_df = tiled_df[tiled_df["mask_path"].isna()].drop(columns="mask_path").reset_index(drop=True)
-
-                    with h5py.File(hdf5_path, mode = 'w') as file:
-                        sup_images = file.create_dataset("sup/images", (len(sup_tiled_df), *tile_size, 3), dtype = np.uint8)
-                        sup_masks = file.create_dataset("sup/masks", len(sup_tiled_df), dtype=h5py.special_dtype(vlen=np.uint8))
-                        sup_images.attrs["image_size"] = tile_size
-
-                        unsup_images = file.create_dataset("unsup/images", (len(unsup_tiled_df), *tile_size, 3), dtype = np.uint8)
-                        unsup_images.attrs["image_size"] = tile_size
-
-                        for scene in tqdm(sup_tiled_df["image_path"].unique()):
-                            df = sup_tiled_df[sup_tiled_df["index"] == scene]
-                            with rio.open(df["image_path"].iloc[0]) as raster:
-                                image = raster.read().transpose(1,2,0)
-                            with rio.open(df["mask_path"].iloc[0]) as raster:
-                                mask = raster.read().squeeze()
-                            for i, row in df.iterrows():
-                                sup_images[i] = cls.read_tile(image, row)
-                                sup_masks[i] = cls.encode_binary_mask(cls.read_tile(mask, row))
-
-                        for scene in tqdm(unsup_tiled_df["image_path"].unique()):
-                            df = unsup_tiled_df[unsup_tiled_df["index"] == scene]
-                            with rio.open(df["image_path"].iloc[0]) as raster:
-                                image = raster.read().transpose(1,2,0)
-                            for i, row in df.iterrows():
-                                unsup_images[i] = cls.read_tile(image, row)
-
-                    sup_images[["image_path", "location"]] \
-                    .assign(image_path = lambda df: df.apply(lambda x: f"{x["image_path"].split('/')[-1].removesuffix('.tif')}_{x["y_min"]}_{x["x_min"]}"), axis = 1) \
-                    .to_hdf(hdf5_path, key = "sup/index", mode = 'r+')
-
-                    sup_images \
-                    .drop(columns = ["image_path", "mask_path", "location"]) \
-                    .to_hdf(hdf5_path, key = "sup/spatial", mode = 'r+')
-
-                    sup_images[["image_path", "location"]] \
-                    .assign(image_path = lambda df: df.apply(lambda x: f"{x["image_path"].split('/')[-1].removesuffix('.tif')}_{x["y_min"]}_{x["x_min"]}"), axis = 1) \
-                    .to_hdf(hdf5_path, key = "unsup/index", mode = 'r+')
-
-                    sup_images \
-                    .drop(columns = ["image_path", "location"]) \
-                    .to_hdf(hdf5_path, key = "unsup/spatial", mode = 'r+')
+                cls.__staging_imagefolder_to_hdf5(imagefolder_path, hdf5_path, tile_size, tile_stride, to_jpg)
                 
     @staticmethod
     def encode_binary_mask(mask : NDArray) -> NDArray:
@@ -388,17 +246,40 @@ class Inria:
         return rle
 
     @staticmethod
-    def decode_binary_mask(rle: NDArray, shape: tuple):
-        mask = np.zeros(rle.sum(), dtype = np.uint8)
-        idx, fill = 0, 0
-        for run in rle:
-            new_idx = idx + run
-            if fill == 1:
-                mask[idx: new_idx] = 1 
-                idx, fill = new_idx, 0
-            else:
-                idx, fill = new_idx, 1
-        return mask.reshape(shape)
+    def decode_binary_mask(rle: NDArray, shape: tuple) -> NDArray:
+        # Calculate total number of pixels
+        total_pixels = np.prod(shape)
+        
+        # Initialize output mask as flattened array
+        mask = np.zeros(total_pixels, dtype=np.uint64)
+        
+        # Determine starting value
+        # If RLE starts with 0, it means we begin with foreground (1)
+        current_value = 1 if rle[0] == 0 else 0
+        
+        # Decode RLE by filling in runs
+        current_pos = 0
+        for run_length in rle.astype(np.uint64):
+            if run_length > 0:  # Only fill if there's a run
+                mask[current_pos:current_pos + run_length] = current_value
+            current_pos += run_length
+            current_value = 1 - current_value  # Alternate between 0 and 1
+        
+        # Convert 1s to 255s and reshape to original shape
+        return np.where(mask == 1, 255, 0).reshape(shape).astype(np.uint8)
+
+    #@staticmethod
+    #def decode_binary_mask(rle: NDArray, shape: tuple):
+        #mask = np.zeros(rle.sum(), dtype = np.uint8)
+        #idx, fill = 0, 0
+        #for run in rle:
+            #new_idx = idx + run
+            #if fill == 1:
+                #mask[idx: new_idx] = 1 
+                #idx, fill = new_idx, 0
+            #else:
+                #idx, fill = new_idx, 1
+        #return mask.reshape(shape)
 
     @staticmethod
     def read_tile(scene: NDArray, row: pd.Series) -> NDArray:
@@ -415,15 +296,187 @@ class Inria:
             tile = np.pad(array = tile, pad_width = pad_width[:2] if tile.ndim == 2 else pad_width)
         return tile
     
-InriaIndexSchema = pa.DataFrameSchema(
-    columns={
-        "image_path": pa.Column(str, coerce=True),
-        "mask_path": pa.Column(str, coerce=True),
-        "location": pa.Column(str, coerce=True),
-        "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))
-    },
-    index=pa.Index(int)
-)
+    @staticmethod
+    def __get_tiled_df(index_df: pd.DataFrame, spatial_df: pd.DataFrame, tile_size: tuple, tile_stride: tuple) -> pd.DataFrame:
+        return (
+            DatasetConfig.sliding_window_spatial_sampler(index_df, spatial_df, tile_size, tile_stride)
+            .merge(spatial_df, how = 'left', left_index=True, right_index=True)
+            .assign(x_off = lambda df: df.apply(lambda col: col["x_off"] + col["x_min"] * col["x_res"], axis = 1))
+            .assign(y_off = lambda df: df.apply(lambda col: col["y_off"] + col["y_min"] * col["y_res"], axis = 1))
+            .assign(image_height = tile_size[0])
+            .assign(image_width = tile_size[1])
+            .reset_index(drop = True)
+        )
+
+    @classmethod
+    def __staging_archive_to_imagefolder(cls, archive_path, imagefolder_path, tile_size, tile_stride):
+        sup_images = fs.get_new_dir(imagefolder_path, "sup", "images")
+        sup_masks = fs.get_new_dir(imagefolder_path, "sup", "masks")
+        unsup_images = fs.get_new_dir(imagefolder_path, "unsup", "images")
+
+        if tile_size is None:
+            with zipfile.ZipFile(archive_path, mode = 'r') as archive:
+                archive.extractall(imagefolder_path)
+            shutil.move(imagefolder_path/"AerialImageDataset"/"test"/"images", unsup_images)
+            shutil.move(imagefolder_path/"AerialImageDataset"/"train"/"images", sup_images)
+            shutil.move(imagefolder_path/"AerialImageDataset"/"train"/"gt", sup_masks)
+            shutil.rmtree(imagefolder_path/"AerialImageDataset")
+
+            cls.load('index', 'archive', 'inria') \
+            .assign(image_path = lambda df: df["image_path"].apply(lambda x: '/'.join(x.split('/')[-3:]).replace("train", "sup").replace("test", "unsup"))) \
+            .assign(mask_path = lambda df: df["image_path"].apply(lambda x: x.replace("gt", "masks") if x is not None else None)) \
+            .to_hdf(imagefolder_path/"metadata.h5", key = "index", mode = "w")
+
+            cls.load('spatial', 'archive', 'inria').to_hdf(imagefolder_path/"metadata.h5", key = "spatial", mode = "r+")
+        
+        else:
+            def _get_tile_path(prefix: Path, row: pd.DataFrame):
+                grandparent_dir, parent_dir, filename = row["image_path"].split('/')[-3:]
+                grandparent_dir = "unsup" if grandparent_dir == "test" else "sup"
+                filename = f"{filename.removesuffix(".tif")}_{row["y_min"]}_{row["x_min"]}.tif"
+                return prefix/grandparent_dir/parent_dir/filename
+
+            index_df = cls.load('index', 'archive', 'inria')
+            spatial_df = cls.load('spatial', 'archive', 'inria')
+            tiled_df = cls.__get_tiled_df(index_df, spatial_df, tile_size, tile_stride)
+
+            # for each scene (5000x5000x3)
+            for scene in tqdm(tiled_df["image_path"].unique()):
+
+                # filter all tile rows from that scene  
+                df = tiled_df[tiled_df["image_path"] == scene]
+
+                # load the scene raster
+                with rio.open(df["image_path"].iloc[0]) as raster:
+                    image = raster.read().transpose(1,2,0)
+                
+                # if the image has a corresponding mask, load that as well
+                supervised = False
+                if df["mask_path"].iloc[0] is not None:
+                    supervised = True
+                    with rio.open(df["mask_path"].iloc[0]) as raster:
+                        mask = raster.read().squeeze()
+
+                kwargs = {'driver': 'GTiff', 'dtype': 'uint8', 'nodata': None, 'height': tile_size[0], 'width': tile_size[1]}
+
+                # for each tile in scene 
+                for i, row in df.iterrows():
+
+                    tile_kwargs = kwargs | {
+                        "fp": _get_tile_path(imagefolder_path, row), "mode": "w", "count": 3,
+                        "crs": CRS.from_epsg(row["crs"]), "transform": Affine(row["x_res"], 0, row["x_off"], 0, row["y_res"], row["y_off"])
+                    }
+
+                    with rio.open(**tile_kwargs) as raster:
+                        raster.write(cls.read_tile(image, row).transpose(2,0,1))
+
+                    if supervised:
+                        tile_kwargs["fp"] = Path(str(tile_kwargs["fp"]).replace("images", "masks"))
+                        tile_kwargs["count"] = 1
+                        with rio.open(**tile_kwargs) as raster:
+                            raster.write(cls.read_tile(mask, row)[np.newaxis,:,:])
+
+            tiled_df["image_path"] = tiled_df.apply(lambda row: _get_tile_path(imagefolder_path, row), axis = "columns")
+            tiled_df["mask_path"] = tiled_df["image_path"].apply(lambda x: x.replace("gt", "masks") if x is not None else None)
+
+            tiled_df[["image_path", "mask_path", "location"]].to_hdf(imagefolder_path/"metadata.h5", key = "index", mode = "w")
+            tiled_df.drop(columns=["image_path", "mask_path", "location"]).to_hdf(imagefolder_path/"metadata.h5", key = "spatial", mode = "r+")
+
+    @classmethod
+    def __staging_imagefolder_to_hdf5(cls, imagefolder_path, hdf5_path, tile_size, tile_stride, to_jpg):
+        index_df = cls.load("index", "staging/imagefolder", 'inria')
+        spatial_df = cls.load("spatial", "staging/imagefolder", 'inria')
+
+        if tile_size is None:
+            sup_index_df = index_df[index_df["mask_path"].notna()].reset_index(drop = True)
+            sup_spatial_df = spatial_df[index_df["mask_path"].notna()].reset_index(drop = True)
+
+            unsup_index_df = index_df[index_df["mask_path"].isna()].drop(columns="mask_path").reset_index(drop=True)
+            unsup_spatial_df = spatial_df[index_df["mask_path"].isna()].reset_index(drop = True)
+
+            with h5py.File(hdf5_path, mode = 'w') as file:
+                sup_images = file.create_dataset("sup/images", (180, 5000, 5000, 3), dtype = np.uint8)
+                sup_masks = file.create_dataset("sup/masks", 180, dtype = h5py.special_dtype(vlen=np.uint8))
+
+                sup_images.attrs["image_size"] = (5000,5000)
+                for idx, row in tqdm(sup_index_df.iterrows(), total = 180):
+                    sup_images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
+                    sup_masks[idx] = cls.encode_binary_mask(iio.imread(imagefolder_path / row["mask_path"], extension=".tif"))
+                
+                unsup_images = file.create_dataset("unsup/images", (180, 5000, 5000, 3), dtype = np.uint8)
+                unsup_images.attrs["image_size"] = (5000,5000)
+                for idx, row in tqdm(unsup_index_df.iterrows(), total = 180):
+                    unsup_images[idx] = iio.imread(imagefolder_path / row["image_path"], extension=".tif")
+
+            sup_index_df.drop(columns = "mask_path").to_hdf(hdf5_path, key = "sup/index", mode = 'r+')
+            sup_spatial_df.to_hdf(hdf5_path, key = "sup/spatial", mode = 'r+')
+
+            unsup_index_df.to_hdf(hdf5_path, key = "sup/index", mode = 'r+')
+            unsup_spatial_df.to_hdf(hdf5_path, key = "unsup/spatial", mode = 'r+')
+
+        else:
+            tiled_df = cls.__get_tiled_df(index_df, spatial_df, tile_size, tile_stride)
+
+            sup_tiled_df = tiled_df[tiled_df["mask_path"].notna()].reset_index(drop=True)
+            unsup_tiled_df = tiled_df[tiled_df["mask_path"].isna()].drop(columns="mask_path").reset_index(drop=True)
+
+            with h5py.File(hdf5_path, mode = 'w') as file:
+                if to_jpg is not None:
+                    sup_images = file.create_dataset("sup/images", len(sup_tiled_df), dtype = h5py.special_dtype(vlen=np.uint8))
+                    sup_masks = file.create_dataset("sup/masks", len(sup_tiled_df), dtype = h5py.special_dtype(vlen=np.uint8))
+
+                else:
+                    sup_images = file.create_dataset("sup/images", (len(sup_tiled_df), *tile_size, 3), dtype = np.uint8)
+                    sup_masks = file.create_dataset("sup/masks", (len(sup_tiled_df), *tile_size), dtype = np.uint8)
+
+                sup_images.attrs["image_size"] = tile_size
+                if to_jpg is not None:
+                    sup_images.attrs["image_format"] = "jpeg"
+                else:
+                    sup_images.attrs["image_format"] = "ndarray"
+
+                for scene in tqdm(sup_tiled_df["image_path"].unique()):
+                    df = sup_tiled_df[sup_tiled_df["image_path"] == scene]
+                    with rio.open(df["image_path"].iloc[0]) as raster:
+                        image = raster.read().transpose(1,2,0)
+                    with rio.open(df["mask_path"].iloc[0]) as raster:
+                        mask = raster.read().squeeze()
+                    for i, row in df.iterrows():
+                        image_tile, mask_tile = cls.read_tile(image, row), cls.read_tile(mask, row)
+                        if to_jpg is not None:
+                            sup_images[i] = np.frombuffer(iio.imwrite("<bytes>", image_tile, extension = ".jpg", quality = to_jpg), dtype = np.uint8)
+                            sup_masks[i] = np.frombuffer(iio.imwrite("<bytes>", mask_tile, extension = ".jpg", quality = to_jpg), dtype = np.uint8)
+                        else:
+                            sup_images[i], sup_masks[i] = image_tile, mask_tile
+
+                unsup_images = file.create_dataset("unsup/images", (len(unsup_tiled_df), *tile_size, 3), dtype = np.uint8)
+                unsup_images.attrs["image_size"] = tile_size
+
+                for scene in tqdm(unsup_tiled_df["image_path"].unique()):
+                    df = unsup_tiled_df[unsup_tiled_df["image_path"] == scene]
+                    with rio.open(df["image_path"].iloc[0]) as raster:
+                        image = raster.read().transpose(1,2,0)
+                    for i, row in df.iterrows():
+                        if to_jpg is not None:
+                            sup_images[i] = np.frombuffer(iio.imwrite("<bytes>", image_tile, extension = ".jpg", quality = to_jpg), dtype = np.uint8)
+                        else:
+                            unsup_images[i] = cls.read_tile(image, row)
+            
+            def rename_tiles(x: pd.Series) -> str:
+                return f"{str(x["image_path"]).split('/')[-1].removesuffix('.tif')}_{x["y_min"]}_{x["x_min"]}"
+
+            sup_tiled_df \
+                .assign(image_path = lambda df: df.apply(rename_tiles, axis = 1)) \
+                .filter(items = ["image_path", "location"]) \
+                .to_hdf(hdf5_path, key = "sup/index", mode = 'r+') \
+
+            unsup_tiled_df \
+                .assign(image_path = lambda df: df.apply(rename_tiles, axis = 1)) \
+                .filter(items = ["image_path", "location"]) \
+                .to_hdf(hdf5_path, key = "unsup/index", mode = 'r+') \
+
+            sup_tiled_df.drop(columns = ["image_path", "mask_path", "location"]).to_hdf(hdf5_path, key = "sup/spatial", mode = 'r+')
+            unsup_tiled_df.drop(columns = ["image_path", "location"]).to_hdf(hdf5_path, key = "unsup/spatial", mode = 'r+')
 
 class Inria_Building_Segmentation_Imagefolder(Dataset):
     name = "inria"
@@ -433,11 +486,13 @@ class Inria_Building_Segmentation_Imagefolder(Dataset):
     class_names = ("background", "building") 
     num_classes = 2 
     root = Inria.local/"imagefolder"
-    schema = InriaIndexSchema 
+    schema = Inria.index_df_schema 
     config = Inria.default_config
     loader = Inria.load
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
+        self.schema.add_columns({"mask_path": pa.Column(str, coerce=True), "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))})
+
         super().__init__(split, config)
         self.df = self.get_df(prefix_root_to_paths=True)
         self.identity_matrix = np.eye(self.num_classes, dtype = np.uint8)
@@ -472,17 +527,22 @@ class Inria_Building_Segmentation_HDF5(Dataset):
     storage = "hdf5"
     class_names = ("background", "building") 
     num_classes = 2 
-    root = Inria.local/"hdf5"/"inria_supervised.h5"
-    schema = InriaIndexSchema 
+    root = Inria.local/"hdf5"/"inria.h5"
+    schema = Inria.index_df_schema 
     config = Inria.default_config
     loader = Inria.load
+    metadata_group_prefix = "sup/"
+
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
+        self.schema.add_columns({"split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))})
+
         super().__init__(split, config)
         self.df = self.get_df(prefix_root_to_paths=False)
         self.identity_matrix = np.eye(self.num_classes, dtype = np.uint8)
 
         with h5py.File(self.root) as f:
-            self.mask_shape = f["images"].attrs.get("image_size", (5000, 5000))
+            self.mask_shape = f[self.metadata_group_prefix + "images"].attrs.get("image_size", (5000, 5000))
+            self.is_jpeg = True if f[self.metadata_group_prefix + "images"].attrs.get("image_format") == "jpeg" else False
 
         self.crop = False 
         if self.config.spatial_sampler_name is not None: 
@@ -492,18 +552,46 @@ class Inria_Building_Segmentation_HDF5(Dataset):
         return len(self.df)
     
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, int]:
+
         idx_row = self.df.iloc[idx]
+
         with h5py.File(self.root, mode = "r") as f:
-            image = f["images"][idx_row["df_idx"]]
-            mask = Inria.decode_binary_mask(f["masks"][idx_row["df_idx"]], shape = self.mask_shape) # mask: (H, W)
+            image = f[self.metadata_group_prefix + "images"][idx_row["df_idx"]]
+            mask = f[self.metadata_group_prefix + "masks"][idx_row["df_idx"]]
+            # mask = Inria.decode_binary_mask(mask, shape = self.mask_shape) # mask: (H, W)
+
+        if self.is_jpeg:
+            image, mask = iio.imread(BytesIO(image)), iio.imread(BytesIO(mask))
         if self.crop:
             image, mask = Inria.read_tile(image, idx_row), Inria.read_tile(mask, idx_row)
+
         mask = self.identity_matrix[np.clip(mask, 0, 1)] # mask: (H, W, num_channels)
-        image, mask = self.config.image_pre(image), self.config.target_pre(mask)
+
         if self.split in ("train", "trainvaltest"):
+            image, mask = self.config.image_pre(image), self.config.target_pre(mask)
             image, mask = self.config.train_aug(image, mask)
         elif self.split in ("val", "test"):
+            image, mask = self.config.image_pre(image), self.config.target_pre(mask)
             image, mask = self.config.eval_aug(image, mask)
-        #print(image.shape, image.dtype, image.min(), image.max(), image.mean())
-        #print(mask.shape, mask.dtype, mask.min(), mask.max(), mask.mean())
         return image, mask, idx_row["df_idx"]
+
+if __name__ == "__main__": ...
+    #Inria.transform("staging/imagefolder", "hdf5", 256, 256, 80)
+    #from geovision.data.tests import test_dataset
+    #from memory_profiler import memory_usage
+    #from matplotlib import pyplot as plt
+
+    #dataset = Inria_Building_Segmentation_HDF5("all")
+    #memory_profile = memory_usage((test_dataset, (dataset, 128, -1, True)))
+
+    #name = f"{dataset.name} memory usage vs time"
+    #plt.plot(memory_profile)
+    #plt.title(name)
+    #plt.ylabel("memory used (MB)")
+    #plt.xlabel("time (0.1s)")
+    #plt.savefig(name)
+    #plt.show()
+
+    #image, mask, idx = dataset[0]
+    #print(image.shape, image.dtype, image.min(), image.max(), image.mean())
+    #print(mask.shape, mask.dtype, mask.min(), mask.max(), mask.mean())

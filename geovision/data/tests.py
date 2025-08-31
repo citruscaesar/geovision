@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-from litdata import StreamingDataLoader
+#from litdata import StreamingDataLoader
 from memory_profiler import memory_usage
 from geovision.io.local import FileSystemIO as fs
 from geovision.data import Dataset
