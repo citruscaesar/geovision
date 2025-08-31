@@ -1,7 +1,7 @@
 ### Optional Features 
 - [] automate periodic sync of metrics, ckpt weights, inference results, etc. over SSH and S3
 - [] cmd tool to plot live metrics from hdf (swmr)
-- [] switch to pixi with local venv
+- [x] switch to pixi with local venv
 - [] Redirect [all] warnings to logfile
 
 ### Training Optmization Features

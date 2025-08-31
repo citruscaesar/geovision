@@ -1,76 +1,70 @@
-[tool.poetry]
+[project]
+authors = [{name = "Sambhav Chandra", email = "vader.sam10@gmail.com"}]
 name = "geovision"
+requires-python = ">= 3.12"
 version = "0.1.0"
-description = ""
-authors = ["Sambhav Chandra <vader.sam10@gmail.com>"]
-readme = "README.md"
-
-[tool.poetry.dependencies]
-python = "^3.12"
-torch = {version = "^2.4.0+cu124", source = "pytorch_cu124"}
-torchvision = {version = "^0.19.0+cu124", source = "pytorch_cu124"}
-transformers = "^4.40.0"
-captum = "^0.7.0"
-scikit-learn = "^1.4.2"
-scikit-image = "^0.23.1"
-imageio = "^2.34.0"
-imagecodecs = "^2024.1.1"
-rasterio = "^1.3.10"
-geopandas = "^0.14.3"
-fiona = "^1.9.6"
-folium = "^0.16.0"
-litdata = "^0.2.3"
-py7zr = "^0.21.0"
-h5py = "^3.11.0"
-wandb = "^0.18.0"
-awscli = "^1.32.87"
-s5cmd = "^0.1.0"
-nvitop = "^1.3.2"
-jupyterlab = "^4.1.6"
-ipykernel = "^6.29.4"
-ipympl = "^0.9.4"
-python-dotenv = "^1.0.1"
-ruff = "0.5.3"
-mypy = "^1.9.0"
-pydantic = "^2.7.0"
-pandera = "^0.20.3"
-pyyaml = "^6.0.1"
-sqlalchemy = "^2.0.29"
-pytest = "^8.1.1"
-types-requests = "^2.31.0.20240406"
-types-tqdm = "^4.66.0.20240417"
-aiohttp = "^3.9.5"
-aiofiles = "^23.2.1"
-types-aiofiles = "^23.2.0.20240403"
-tables = "^3.9.2"
-memory-profiler = "^0.61.0"
-names-generator = "^0.2.0"
-jsonargparse = {extras = ["all"], version = "^4.30.0"}
-seaborn = "^0.13.2"
-geopy = "^2.4.1"
-cartopy = "^0.23.0"
-openpyxl = "^3.1.5"
-timm = "^1.0.9"
-lightning = "^2.4.0"
-shapely = "^2.0.6"
-einops = "^0.8.0"
-lxml = "^5.3.0"
-html5lib = "^1.1"
-rtree = "^1.3.0"
-
-[[tool.poetry.source]]
-name = "pytorch_cu124"
-url = "https://download.pytorch.org/whl/cu124"
-priority = "explicit"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+build-backend = "hatchling.build"
+requires = ["hatchling"]
 
-[tool.pytest.ini_options]
-python_files = "*.py"
-addopts = "-s -v"
+[tool.ty.environment]
+root = ["./geovision"]
+python-version = "3.12"
 
 [tool.ruff]
-line-length = 150 
+line-length = 150
 indent-width = 4
+target-version = "py312"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.feature.devel.dependencies]
+scikit-image = ">=0.25.2,<0.26"
+imageio = ">=2.37.0,<3"
+rasterio = ">=1.4.3,<2"
+geopandas = ">=1.1.1,<2"
+fiona = ">=1.10.1,<2"
+folium = ">=0.20.0,<0.21"
+seaborn = ">=0.13.2,<0.14"
+geopy = ">=2.4.1,<3"
+cartopy = ">=0.25.0,<0.26"
+imagecodecs = ">=2025.8.2,<2026"
+pandera-pandas = ">=0.24.0,<0.25"
+pandera-geopandas = ">=0.24.0,<0.25"
+h5py = ">=3.14.0,<4"
+pytables = ">=3.10.2,<4"
+wandb = ">=0.21.1,<0.22"
+py7zr = ">=1.0.0,<2"
+s5cmd = ">=2.3.0,<3"
+aiofiles = ">=24.1.0,<25"
+rsync = ">=3.4.1,<4"
+rich = ">=14.1.0,<15"
+pytest = ">=8.4.1,<9"
+ipykernel = ">=6.30.1,<7"
+ipympl = ">=0.9.7,<0.10"
+ruff = ">=0.12.10,<0.13"
+pyyaml = ">=6.0.2,<7"
+python-dotenv = ">=1.1.1,<2"
+nvitop = ">=1.5.3,<2"
+
+[tool.pixi.feature.cuda126.dependencies]
+python = "~=3.12.0"
+
+[tool.pixi.feature.cuda126.pypi-dependencies]
+geovision = { path = ".", editable = true }
+torch = {version = ">=2.8.0", index = "https://download.pytorch.org/whl/cu126"}
+torchvision = {version = ">=0.23", index = "https://download.pytorch.org/whl/cu126"}
+torchgeo = {version = ">=0.7.0"}
+
+[tool.pixi.feature.attribution.pypi-dependencies]
+captum = {version = ">=0.8.0"}
+
+[tool.pixi.environments]
+dev = ["cuda126", "devel"] 
+attrib = ["cuda126", "attribution"]
+
+[dependency-groups]
+devel = ["memory-profiler>=0.61.0,<0.62"]
