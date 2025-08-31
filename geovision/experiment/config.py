@@ -295,5 +295,5 @@ class ExperimentConfig:
         
 if __name__ == "__main__":
     config = ExperimentConfig.from_yaml(Path.home() / "dev" / "geovision" / "geovision" / "scripts" / "config.yaml")
-    print(config.ckpt_path)
-    #print(config)
+    #print(config.ckpt_path)
+    print(config)

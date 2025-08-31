@@ -3,6 +3,7 @@ from collections.abc import Callable
 
 import torch
 import lightning
+import torchmetrics
 
 from itertools import chain
 from importlib import import_module
@@ -28,6 +29,8 @@ class ModelConfig:
         for k in encoder_params.keys():
             if k.endswith("_block"):
                 encoder_params[k] = getattr(blocks, encoder_params[k])
+            if k == "weights":
+                encoder_params[k] = self._get_weights_enum(encoder_params[k])
         self.encoder_params = encoder_params 
 
         assert isinstance(decoder_params, dict), f"config error (invalid type), expected :decoder_params to be dict, got {type(decoder_params)}"
@@ -40,7 +43,12 @@ class ModelConfig:
             self.ckpt_path = fs.get_valid_file_err(ckpt_path)
         else:
             self.ckpt_path = None
-        
+    
+    def _get_weights_enum(self, name: str):
+        name: list = name.split('.')
+        get_weight: callable = getattr(import_module('.'.join(name[:2])), "get_weight")
+        return get_weight('.'.join(name[-2:]))
+
     def _get_constructor(self, name: str) -> torch.nn.Module:
         name = name.split('.') 
         return getattr(import_module('.'.join(name[:-1])), name[-1])
@@ -89,6 +97,8 @@ class ClassificationModule(lightning.LightningModule):
 
         if model_config.ckpt_path is not None:
             self.load_from_checkpoint(model_config.ckpt_path)
+        
+        self.train_acc = torchmetrics.Accuracy("binary", num_classes = 2, sync_on_compute = True)
 
         self.save_hyperparameters({
             "encoder": model_config.encoder_constructor.__qualname__, 
@@ -151,8 +161,8 @@ class ClassificationModule(lightning.LightningModule):
     def training_step(self, batch, batch_idx):
         preds, _, loss = self._forward(batch)
         # print(*self.lr_schedulers().get_last_lr())
-        # self.log("train/loss", loss, on_step = False, on_epoch = True)
-        # self.log(f"train/{self.config.metric}", self.metric(preds, labels), on_step = False, on_epoch = True, prog_bar=True)
+        #self.log("train/loss", loss, on_step = False, on_epoch = True)
+        #self.log("train/accuracy", self.train_acc(preds, labels), on_step = False, on_epoch = True, prog_bar = True)
         # self.metric.reset()
         return {"loss": loss, "preds": preds}
 

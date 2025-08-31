@@ -95,21 +95,9 @@ class ClassificationLogger(Callback):
         self.monitor_metric_name: str = config.metric_name
 
         self.metrics = torchmetrics.MetricCollection({
-            "accuracy": config.get_metric("Accuracy",),
-            "precision": config.get_metric("Precision"),
-            "recall": config.get_metric("Recall"),
-            "f1": config.get_metric("F1Score"),
-            "iou": config.get_metric("JaccardIndex"),
+            "accuracy": config.get_metric("Accuracy", {"sync_on_compute": True}),
         })
-        if self.dataset.task == "classification":
-            k = min(5, self.dataset.num_classes)
-            self.metrics.add_metrics({f"accuracy_top{k}": config.get_metric("Accuracy", {"top_k": k})})
-
-        if config.metric_name not in self.metrics.keys():
-            self.metrics.add_metrics({config.metric_name: config.get_metric(config.metric_name)})
-
-        self.confusion_matrix = config.get_metric("ConfusionMatrix")
-
+        
     def calculate_steps(self, trainer: Trainer):
         if trainer.limit_train_batches != 1.0:
             self.train_steps_per_epoch = int(trainer.limit_train_batches)
@@ -225,31 +213,36 @@ class ClassificationLogger(Callback):
                 self.train_step += 1
 
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if not trainer.validating and not trainer.sanity_checking and self.train_step == self.train_steps_per_epoch:
-            # print(f"logging epoch at {self.train_epoch}")
-            metrics_dict = self.train_metrics_epoch.compute()
-            metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"train_loss_epoch": np.mean(self.train_loss_buffer)}
+        if trainer.is_global_zero:
+            if not trainer.validating and not trainer.sanity_checking and self.train_step == self.train_steps_per_epoch:
+                # print(f"logging epoch at {self.train_epoch}")
+                metrics_dict = self.train_metrics_epoch.compute()
+                metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"train_loss_epoch": np.mean(self.train_loss_buffer)}
 
-            scheduler = pl_module.lr_schedulers()
-            if scheduler is not None:
-                if isinstance(scheduler, list):
-                    scheduler = scheduler[-1]
-                self.learning_rate = scheduler.get_last_lr()[0]
-            else:
-                self.learning_rate = np.nan
+                scheduler = pl_module.lr_schedulers()
+                if scheduler is not None:
+                    if isinstance(scheduler, list):
+                        scheduler = scheduler[-1]
+                    self.learning_rate = scheduler.get_last_lr()[0]
+                else:
+                    self.learning_rate = np.nan
 
-            metrics_dict = metrics_dict | {"train_lr_step": self.learning_rate}
+                metrics_dict = metrics_dict | {"train_lr_step": self.learning_rate}
 
-            confusion_matrix = self.train_confusion_matrix.compute().numpy()
-            if self.log_to_h5:
-                self.h5_run.log_dict(metrics_dict | {"train_confusion_matrix_epoch": confusion_matrix})
-            if self.log_to_csv:
-                pl_module.log_dict(metrics_dict, on_step=False, on_epoch=True)
-            if self.log_to_wandb:
-                self.wandb_run.log(metrics_dict | {"train_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), "trainer_step": trainer.global_step, "trainer_epoch": trainer.current_epoch})
-            self.train_metrics_epoch.reset()
-            self.train_confusion_matrix.reset()
-            self.train_epoch += 1
+                confusion_matrix = self.train_confusion_matrix.compute().numpy()
+                if self.log_to_h5:
+                    self.h5_run.log_dict(metrics_dict | {"train_confusion_matrix_epoch": confusion_matrix})
+                if self.log_to_csv:
+                    pl_module.log_dict(metrics_dict, on_step=False, on_epoch=True)
+                if self.log_to_wandb:
+                    self.wandb_run.log(metrics_dict | {
+                        "train_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), 
+                        "trainer_step": trainer.global_step, 
+                        "trainer_epoch": trainer.current_epoch
+                    })
+                self.train_metrics_epoch.reset()
+                self.train_confusion_matrix.reset()
+                self.train_epoch += 1
 
     def on_validation_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         self.val_epoch = 0
@@ -274,50 +267,58 @@ class ClassificationLogger(Callback):
                 dtype = np.int64
             )
 
-    def on_validation_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.val_step = 0
+    # def on_validation_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        # self.val_step = 0
 
-    def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
-        if not trainer.sanity_checking:
-            preds, labels, loss = outputs["preds"].detach().cpu(), batch[1].detach().cpu(), outputs["loss"].item(),
-            if labels.dim() > 1:
-                labels = labels.argmax(1)
-            self.val_loss_buffer[self.val_step] = loss
-            self.val_metrics_step.update(preds, labels)
-            self.val_metrics_epoch.update(preds, labels)
-            self.val_confusion_matrix.update(preds, labels)
+    # def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+        # if trainer.is_global_zero and not trainer.sanity_checking:
+            # preds, labels, loss = outputs["preds"].detach().cpu(), batch[1].detach().cpu(), outputs["loss"],
+            # if trainer.world_size > 1:
+                # local_loss = torch.tensor(loss, device = pl_module.device)
+                # synced_loss = trainer.strategy.reduce(local_loss, "mean")
+                # loss = synced_loss.item()
+            # else:
+                # loss = loss.item()
 
-            if ((self.val_step + 1) % self.log_every_n_steps == 0) or (self.val_step == self.val_steps_per_epoch):
-                begin, end = self.val_step + 1 - self.log_every_n_steps, self.val_step + 1
-                metrics_dict = self.val_metrics_step.compute()
-                metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"val_loss_step": np.mean(self.val_loss_buffer[begin:end])}
-                if self.log_to_h5:
-                    self.h5_run.log_dict(metrics_dict)
-                if self.log_to_csv:
-                    pl_module.log_dict(metrics_dict, on_step=True, on_epoch=False)
-                if self.log_to_wandb:
-                    self.wandb_run.log(metrics_dict | {"trainer_step": trainer.global_step + self.val_step})
-                self.val_metrics_step.reset()
-            self.val_step += 1
+            # if labels.dim() > 1:
+                # labels = labels.argmax(1)
+            # self.val_loss_buffer[self.val_step] = loss
+            # self.val_metrics_step.update(preds, labels)
+            # self.val_metrics_epoch.update(preds, labels)
+            # self.val_confusion_matrix.update(preds, labels)
 
-    def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if not trainer.sanity_checking and self.val_step == self.val_steps_per_epoch:
-            metrics_dict = self.val_metrics_epoch.compute()
-            metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"val_loss_epoch": np.mean(self.val_loss_buffer)}
-            confusion_matrix = self.val_confusion_matrix.compute().numpy()
-            if self.log_to_csv:
-                pl_module.log_dict(metrics_dict, on_step=False, on_epoch=True)
-            if self.log_to_h5:
-                self.h5_run.log_dict(metrics_dict | {"val_confusion_matrix_epoch": confusion_matrix})
-            if self.log_to_wandb:
-                self.wandb_run.log(metrics_dict | {
-                    "val_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), 
-                    "trainer_step": trainer.global_step, 
-                    "trainer_epoch": trainer.current_epoch
-                })
-            self.val_metrics_epoch.reset()
-            self.val_confusion_matrix.reset()
-            self.val_epoch += 1
+            # if ((self.val_step + 1) % self.log_every_n_steps == 0) or (self.val_step == self.val_steps_per_epoch):
+                # begin, end = self.val_step + 1 - self.log_every_n_steps, self.val_step + 1
+                # metrics_dict = self.val_metrics_step.compute()
+                # metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"val_loss_step": np.mean(self.val_loss_buffer[begin:end])}
+                # if self.log_to_h5:
+                    # self.h5_run.log_dict(metrics_dict)
+                # if self.log_to_csv:
+                    # pl_module.log_dict(metrics_dict, on_step=True, on_epoch=False)
+                # if self.log_to_wandb:
+                    # self.wandb_run.log(metrics_dict | {"trainer_step": trainer.global_step + self.val_step})
+                # self.val_metrics_step.reset()
+            # self.val_step += 1
+
+    # def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        # if trainer.is_global_zero:
+            # if not trainer.sanity_checking and self.val_step == self.val_steps_per_epoch:
+                # metrics_dict = self.val_metrics_epoch.compute()
+                # metrics_dict = {k: metrics_dict[k].item() for k in metrics_dict.keys()} | {"val_loss_epoch": np.mean(self.val_loss_buffer)}
+                # confusion_matrix = self.val_confusion_matrix.compute().numpy()
+                # if self.log_to_csv:
+                    # pl_module.log_dict(metrics_dict, on_step=False, on_epoch=True)
+                # if self.log_to_h5:
+                    # self.h5_run.log_dict(metrics_dict | {"val_confusion_matrix_epoch": confusion_matrix})
+                # if self.log_to_wandb:
+                    # self.wandb_run.log(metrics_dict | {
+                        # "val_confusion_matrix_epoch": get_confusion_matrix_plot(confusion_matrix, self.dataset.class_names), 
+                        # "trainer_step": trainer.global_step, 
+                        # "trainer_epoch": trainer.current_epoch
+                    # })
+                # self.val_metrics_epoch.reset()
+                # self.val_confusion_matrix.reset()
+                # self.val_epoch += 1
 
     def teardown(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
         if trainer.is_global_zero:

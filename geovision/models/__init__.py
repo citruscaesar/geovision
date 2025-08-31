@@ -10,12 +10,11 @@ def get_state_dict(weights_init: Literal["torchvision", "torchgeo", "url", "path
     if weights_init in ("torchvision", "torchgeo"):
         assert weights_param is not None, f"config error, did not expect :weights_param be None when :weights_init is {weights_init}"
         if weights_init == "torchvision":
-            import torchvision
-            weights = torchvision.models.get_weight(weights_param)
+            from torchvison.models import get_weight
+            weights = get_weight(weights_param)
         elif weights_init == "torchgeo":
-            raise NotImplementedError("loading torchgeo weights is not implemented yet, need to fix poetry for that")
-            # import torchgeo.models
-            # weights = torchgeo.models.get_weight(weights_param)
+            from torchgeo.models import get_weight
+            weights = get_weight(weights_param)
         return weights.get_state_dict()
 
     elif weights_init == "path":

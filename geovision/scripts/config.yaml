@@ -1,20 +1,20 @@
-project_name: !!str inria 
-run_name: !!str testing_everything 
-random_seed: !!int 42
+project_name: inria 
+run_name: testing_everything 
+random_seed: 42
 
 trainer_params:
-  max_epochs: !!int 1
-  precision: !!str '16-mixed' 
-  num_sanity_val_steps: !!int 0
-  enable_model_summary: !!bool True
+  max_epochs: 1
+  #precision: '16-mixed' 
+  num_sanity_val_steps: 0
+  #enable_model_summary: True
 
 log_params:
   log_to_h5: False 
   log_to_wandb: False 
-  log_to_csv: True 
+  log_to_csv: False 
   wandb_init_params:
-    tags: ["imagenet", "resnet50"]
-    notes: "training from scratch" 
+    tags: ["inria", "resnet50"]
+    notes: "testing building segmentation" 
   log_every_n_steps: 10
   log_every_n_epochs: 1
   log_models: True 
@@ -27,7 +27,7 @@ dataset_params:
     val_frac: 0.15 
     test_frac: 0.15
     split_on: location 
-  spatial_sampler_name: sliding_window
+  spatial_sampler_name: null 
   spatial_sampler_params:
     tile_size: 256 
     tile_stride: 200 
@@ -55,9 +55,9 @@ dataset_params:
   
 dataloader_params:
   # effective batch size = batch_size // gradient_accumulation
-  batch_size: 16 
+  batch_size: 256 
   gradient_accumulation: 1
-  num_workers: 3
+  num_workers: 4
   persistent_workers: False 
   pin_memory: True 
   prefetch_factor: 2
@@ -67,10 +67,10 @@ model_params:
   ckpt_path: null
   encoder: geovision.models.resnet.ResNetFeatureExtractor
   encoder_params:
-    layers: 18 
-    residual_block_name: basic 
-    weights_init: torchvision 
-    weights_param: ResNet18_Weights.DEFAULT
+    layers: 50 
+    residual_block_name: bottleneck 
+    weights_init: torchgeo 
+    weights_param: ResNet50_Weights.FMOW_RGB_GASSL
   decoder: geovision.models.unet.UNetDecoder
   decoder_params:
     upsampling: bilinear
@@ -83,7 +83,7 @@ model_params:
       residual_path: basic 
       identity_path: identity
     
-metric_name: JaccardIndex 
+metric_name: JaccardIndex
 metric_params: null
  
 criterion_name: CrossEntropyLoss
@@ -96,18 +96,18 @@ optimizer_params:
   momentum: 0.9
   weight_decay: 5.0e-4
 
-scheduler_name: LinearLR 
-scheduler_params:
-  start_factor: 1.0 
-  end_factor: 0.001 
-  total_iters: 5
-
 warmup_scheduler_name: LinearLR 
 warmup_scheduler_params:
   start_factor: 0.001 
   end_factor: 0.9 
   total_iters: 200 
 warmup_steps: 200 
+
+scheduler_name: LinearLR 
+scheduler_params:
+  start_factor: 1.0 
+  end_factor: 0.001 
+  total_iters: 5
 
 scheduler_config_params:
   interval: epoch 
