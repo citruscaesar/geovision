@@ -208,7 +208,7 @@ class ExperimentConfig:
         out = f"==Experiment Config==\nProject Name: {self.project_name}\nRun Name: {self.run_name}\nRandom Seed: {self.random_seed}\n\n"
         out += f"==Logging Config==\n{"\n".join(str(self.log_params).removeprefix("{").removesuffix("}").split(", "))}\n\n"
         out += f"==Dataset Config==\nDataset: {self.dataset_name} [{self.dataset_constructor}]\n{self.dataset_config}Dataloader Params: {self.dataloader_config}\n\n"
-        out += f"==Model Config==\nModel Type: {self.model_name}\nEncoder:{self.model_config.encoder_name} {self.model_config.encoder_params}\nDecoder:{self.model_config.decoder_name} {self.model_config.decoder_params}\n\n"
+        out += f"==Model Config==\nModel Type: {self.model_name}\nEncoder:{self.model_config.encoder_constructor.__qualname__} {self.model_config.encoder_params}\nDecoder:{self.model_config.decoder_constructor.__qualname__} {self.model_config.decoder_params}\n\n"
         out += f"==Task Config==\nTrainer Task: {self.trainer_task}\nTrainer Params: {self.trainer_params}\n\n"
         out += f"==Evaluation Config==\nCriterion: {self.criterion_name} [{self.criterion_constructor}]\nCriterion Params: {self.criterion_params}\n"
         out += f"Metric: {self.metric_name} [{self.metric_constructor}]\nMetric Params: {self.metric_params}\n\n"

@@ -1,0 +1,112 @@
+project_name: resisc45 
+run_name: logging_test 
+random_seed: 42
+
+trainer_params:
+  max_epochs: 10
+  strategy: 'ddp'
+  devices: 4
+  precision: '16-mixed' 
+  num_sanity_val_steps: 0
+  use_distributed_sampler: True
+
+log_params:
+  log_to_h5: False 
+  log_to_wandb: False 
+  log_to_csv: False 
+  wandb_init_params:
+    tags: ["resisc45", "resnet50"]
+    notes: "image classification" 
+  log_every_n_steps: 10 
+  log_every_n_epochs: 1
+  log_models: True 
+
+dataset_name: resisc45.Resisc45_HDF5_Classification
+dataset_params:
+  df: null 
+  tabular_sampler_name: "stratified" 
+  tabular_sampler_params:
+    val_frac: 0.15 
+    test_frac: 0.15
+    split_on: label_str 
+  spatial_sampler_name: null 
+  spatial_sampler_params: null
+  spectral_sampler_name: null 
+  spectral_sampler_params: null
+  batch_transform_name: null 
+  batch_transform_params: null
+  transforms: |
+    from torch import float32
+    from torchvision.transforms import v2 as T
+    image_pre = T.Compose([
+      T.ToImage(),
+      T.ToDtype(float32, scale = True),
+    ])
+    target_pre = T.Compose([
+      T.ToImage(),
+      T.ToDtype(float32, scale = False),
+    ])
+    train_aug = T.Compose([
+      T.RandomVerticalFlip(0.5),
+      T.RandomHorizontalFlip(0.5),
+    ])
+    eval_aug = T.Identity()
+  
+dataloader_params:
+  # effective batch size = batch_size // gradient_accumulation
+  batch_size: 64 
+  gradient_accumulation: 1
+  num_workers: 16 
+  persistent_workers: False 
+  pin_memory: True 
+  prefetch_factor: 8 
+
+model_name: ClassificationModule 
+model_params:
+  ckpt_path: null
+  encoder: geovision.models.resnet.ResNetFeatureExtractor
+  encoder_params:
+    layers: 50 
+    residual_block_name: bottleneck 
+    weights_init: torchgeo 
+    weights_param: ResNet50_Weights.FMOW_RGB_GASSL
+  decoder: geovision.models.blocks.LinearDecoderBlock
+  decoder_params:
+    weights_init: random
+        
+metric_name: Accuracy 
+metric_params: null
+ 
+criterion_name: CrossEntropyLoss
+criterion_params:
+  reduction: mean
+
+optimizer_name: Adam 
+optimizer_params:
+  lr: 5.0e-6
+  momentum: 0.9
+  weight_decay: 5.0e-4
+
+# SquentialLR([Warmup_Scheduler(), DecayScheduler()], milestones=warmup_steps)
+warmup_scheduler_name: LinearLR 
+warmup_scheduler_params:
+  start_factor: 0.001 
+  end_factor: 0.99 
+  total_iters: 50 
+warmup_steps: 50 
+
+scheduler_name: LinearLR 
+scheduler_params:
+  start_factor: 1.0 
+  end_factor: 0.001 
+  total_iters: 10 
+
+# LR Scheduler Config (LightningModule configure_optimizers())
+# -> interval[step/epoch]: default epoch. scheduler.step() is called every ...
+# -> frequency[int]: default 1. how many intervals (step/epoch) between calling scheduler.step()
+# -> monitor[str]: metric to track/condition on for scheduler.step() like ReduceLROnPlateau
+# -> strict[bool]: default True. stop execution if monitor is not found in logged metrics 
+# -> name[str]: name to log if using the LearningRateMonitor callback
+scheduler_config_params:
+  interval: epoch 
+  monitor: train_loss_epoch 

@@ -3,13 +3,17 @@ import logging
 import warnings
 import argparse
 from dotenv import load_dotenv
+
 from lightning import Trainer
-from geovision.io.local import FileSystemIO as fs
 from lightning.pytorch.profilers import PyTorchProfiler
+from lightning.pytorch.callbacks import LearningRateMonitor
+
+from geovision.io.local import FileSystemIO as fs
 from geovision.experiment.config import ExperimentConfig
 from geovision.data import ImageDatasetDataModule
 from geovision.models.interfaces import ClassificationModule
-from geovision.experiment.loggers import get_csv_logger, get_ckpt_logger, get_classification_logger
+from geovision.experiment.loggers import get_csv_logger, get_ckpt_logger
+#from geovision.experiment.loggers import get_classification_logger
 
 if __name__ == "__main__":
     load_dotenv()
@@ -43,7 +47,8 @@ if __name__ == "__main__":
     loggers.append(csv_logger := get_csv_logger(config))
 
     callbacks: list = list()
-    callbacks.append(metrics_logger := get_classification_logger(config))
+    #callbacks.append(metrics_logger := get_classification_logger(config))
+    callbacks.append(lr_logger := LearningRateMonitor("step"))
     if config.trainer_params["enable_checkpointing"]:
         callbacks.append(ckpt_logger:=get_ckpt_logger(config))
 

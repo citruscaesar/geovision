@@ -475,10 +475,12 @@ class Dataset:
         assert hasattr(self, "loader") and callable(self.loader) 
 
         assert hasattr(self, "metadata_group_prefix")
-        if self.metadata_group_prefix is None: 
+        # if none
+        if isinstance(self.metadata_group_prefix, str):
+            assert self.metadata_group_prefix.endswith('/')
+        elif self.metadata_group_prefix is None: 
             self.metadata_group_prefix = str()
         assert isinstance(self.metadata_group_prefix, str)
-        assert self.metadata_group_prefix.endswith('/')
 
     def __check_storage(self):
         assert hasattr(self, "root")
