@@ -1,9 +1,8 @@
-from typing import Any, Optional, Literal
+from typing import Any, Optional
 from collections.abc import Callable
 
 import torch
 import lightning
-import torchmetrics
 
 from itertools import chain
 from importlib import import_module
@@ -73,6 +72,7 @@ class ClassificationModule(lightning.LightningModule):
         self.encoder = model_config.encoder_constructor(**model_config.encoder_params)
 
         if "Linear" in model_config.decoder_constructor.__qualname__:
+            model_config.decoder_params["in_ch"] = self.encoder._out_ch_per_layer[-1]
             self.forward = self._clf_forward
 
         elif "UNet" in model_config.decoder_constructor.__qualname__:
@@ -98,8 +98,6 @@ class ClassificationModule(lightning.LightningModule):
         if model_config.ckpt_path is not None:
             self.load_from_checkpoint(model_config.ckpt_path)
         
-        self.train_acc = torchmetrics.Accuracy("binary", num_classes = 2, sync_on_compute = True)
-
         self.save_hyperparameters({
             "encoder": model_config.encoder_constructor.__qualname__, 
             "encoder_params": model_config.encoder_params,
@@ -134,6 +132,7 @@ class ClassificationModule(lightning.LightningModule):
                 config["lr_scheduler"] = {"scheduler": get_warmup_and_lr_scheduler()} | self.scheduler_config_params 
             else:
                 config["lr_scheduler"] = {"scheduler": get_lr_scheduler()} | self.scheduler_config_params 
+
         elif self.warmup_scheduler_constructor is not None:
             config["lr_scheduler"] = {"scheduler": get_warmup_scheduler()} | self.scheduler_config_params 
 
@@ -151,32 +150,26 @@ class ClassificationModule(lightning.LightningModule):
 
     def _forward(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE: batch_size: N, num_channels: C, height: H, width: W, num_classes: C'
-        # NOTE: Classification: (NCHW) -> model -> (NC') -> argmax(1) -> (N,)
-        # NOTE: Segmentation: (NCHW) -> model -> (NC'HW) -> argmax(1) -> (NHW)
+        # NOTE: Classification: (NCHW):float -> model -> (NC'):float -> argmax(1) -> (N,):int
+        # NOTE: Segmentation: (NCHW):float -> model -> (NC'HW):float -> argmax(1) -> (NHW):int
         images, labels = batch[0], batch[1]
         preds = self.forward(images) 
         loss = self.criterion(preds, labels)
         return preds, labels, loss
 
     def training_step(self, batch, batch_idx):
-        preds, _, loss = self._forward(batch)
-        # print(*self.lr_schedulers().get_last_lr())
-        #self.log("train/loss", loss, on_step = False, on_epoch = True)
-        #self.log("train/accuracy", self.train_acc(preds, labels), on_step = False, on_epoch = True, prog_bar = True)
-        # self.metric.reset()
+        preds, labels, loss = self._forward(batch)
+        if not self.trainer.validating and not self.trainer.sanity_checking:
+            self.log("train_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
         return {"loss": loss, "preds": preds}
-
+    
     def validation_step(self, batch, batch_idx):
-        preds, _, loss = self._forward(batch)
-        # self.log("val/loss", loss, on_step = False, on_epoch = True)
-        # self.log(f"val/{self.config.metric}", self.metric(preds, labels), on_step = False, on_epoch = True, prog_bar=True)
-        # self.metric.reset()
+        preds, labels, loss = self._forward(batch)
+        if not self.trainer.sanity_checking:
+            self.log("val_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
         return {"loss": loss, "preds": preds}
 
     def test_step(self, batch, batch_idx):
         preds, _, loss = self._forward(batch)
-        # self.test_metric.update(preds, labels)
-        # self.log("test/loss", loss, on_step = False, on_epoch = True)
-        # self.log(f"test/{self.config.metric}", self.metric(preds, labels), on_step = False, on_epoch = True, prog_bar=True)
-        # self.metric.reset()
+        self.log("test_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         return {"loss": loss, "preds": preds}

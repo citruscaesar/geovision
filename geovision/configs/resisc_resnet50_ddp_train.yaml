@@ -13,7 +13,7 @@ trainer_params:
 log_params:
   log_to_h5: False 
   log_to_wandb: False 
-  log_to_csv: False 
+  log_to_csv: True 
   wandb_init_params:
     tags: ["resisc45", "resnet50"]
     notes: "image classification" 
@@ -72,6 +72,8 @@ model_params:
     weights_param: ResNet50_Weights.FMOW_RGB_GASSL
   decoder: geovision.models.blocks.LinearDecoderBlock
   decoder_params:
+    in_ch: 2048
+    out_ch: 45
     weights_init: random
         
 metric_name: Accuracy 

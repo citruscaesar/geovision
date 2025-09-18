@@ -151,7 +151,7 @@ class Resisc45_HDF5_Classification(Dataset):
 
     def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
         super().__init__(split, config)
-        self.df = self.get_df(prefix_root_to_paths=False)
+        self.df = self.get_df(prefix_root_to_paths=False).reset_index(drop=True)
 
         # Load the entire dataset into memory ~ 6GB 
         self.images = np.empty(shape = (len(self.df), 256, 256, 3), dtype = np.uint8) 

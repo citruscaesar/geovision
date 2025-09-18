@@ -4,16 +4,16 @@ random_seed: 42
 
 trainer_params:
   max_epochs: 10
-  strategy: 'ddp'
-  devices: 4
+  #strategy: 'ddp'
+  #devices: 4
   precision: '16-mixed' 
   num_sanity_val_steps: 0
   use_distributed_sampler: True
 
 log_params:
   log_to_h5: False 
-  log_to_wandb: False 
   log_to_csv: False 
+  log_to_wandb: False 
   wandb_init_params:
     tags: ["inria", "resnet50"]
     notes: "testing building segmentation" 

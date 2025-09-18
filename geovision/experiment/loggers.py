@@ -19,6 +19,8 @@ from .utils import plot as cfm_plot
 import logging
 logger = logging.getLogger(__name__)
 
+# TODO: Write new HDF5 Logger subclassing from lightning.pytorch.loggers.Logger
+
 class HDF5ExperimentWriter:
     def __init__(self, experiments_dir: Path):
         self.logfile = experiments_dir / "experiment.h5"
@@ -76,7 +78,116 @@ class HDF5ExperimentWriter:
                 logfile[metric] = logfile["temp"]
                 del logfile["temp"] 
 
-class ClassificationLogger(Callback):
+class ClassificationMetricsLogger(Callback):
+    def __init__(self, config: ExperimentConfig):
+
+        self.log_to_csv: bool = config.log_params["log_to_csv"]
+        # if self.log_to_csv:
+            # NOTE: check in setup if a csv logger is provided if True
+             
+        self.log_to_wandb: bool = config.log_params["log_to_wandb"]
+        if self.log_to_wandb:
+            # NOTE: check in setup if a wandb logger is provided if True
+            # NOTE: verify the wandb init params
+            self.wandb_init_params: dict = config.wandb_init_params
+
+        # NOTE: Write an h5 logger (or modify the older one)
+        # self.log_to_h5: bool = config.log_params["log_to_h5"]
+
+        # NOTE: log_every_n_steps is passed to the Trainer to control logging frequency
+        self.log_every_n_steps: int = config.log_params["log_every_n_steps"]
+        self.log_every_n_epochs: int = config.log_params["log_every_n_epochs"]
+
+        self.experiments_dir: Path = config.experiments_dir 
+        self.batch_size: int = config.dataloader_config.batch_size // config.dataloader_config.gradient_accumulation
+        self.learning_rate: float = config.optimizer_params["lr"]
+        self.dataset: Dataset = config.dataset_constructor
+        self.monitor_metric_name: str = config.metric_name
+
+        # NOTE: write a metrics config to list which metrics to log 
+        metrics = torchmetrics.MetricCollection({
+            "acc": config.get_metric("Accuracy", {"sync_on_compute": True}),
+            "f1": config.get_metric("F1Score", {"sync_on_compute": True}),
+        })
+        self.train_metrics = metrics.clone(prefix = "train_")
+        self.val_metrics = metrics.clone(prefix = "val_") 
+
+        confm = config.get_metric("ConfusionMatrix", {"sync_on_compute": True})
+        self.train_confm = confm.clone()
+        self.val_confm = confm.clone()
+    
+    def on_train_start(self, trainer, pl_module):
+        self.train_metrics.to(pl_module.device)
+        self.train_confm.to(pl_module.device)
+    
+    def on_validation_start(self, trainer, pl_module):
+        self.val_metrics.to(pl_module.device)
+        self.val_confm.to(pl_module.device)
+    
+    def on_train_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int) -> None:
+        scheduler = pl_module.lr_schedulers()
+        if scheduler is not None:
+            if isinstance(scheduler, list):
+                scheduler = scheduler[-1]
+            learning_rate = scheduler.get_last_lr()[0] # NOTE: get_last_lr(): (...) -> [lr]
+        else:
+            # TODO: get lr from optmizers instead ? print(pl_module.optimizers())
+            learning_rate = pl_module.optimizers().param_groups[0]['lr']
+
+        if not trainer.validating and not trainer.sanity_checking:
+            pl_module.log("global_step", int(pl_module.global_step), on_step=True, on_epoch=False, sync_dist=False, rank_zero_only=True)
+            pl_module.log("current_epoch", int(pl_module.current_epoch), on_step=True, on_epoch=False, sync_dist=False, rank_zero_only=True)
+            pl_module.log("lr", learning_rate, on_step=True, on_epoch=False, sync_dist=False, rank_zero_only=True)
+
+            preds, labels = outputs["preds"], batch[1]
+            pl_module.log_dict(self.train_metrics(preds, labels), on_step=True, on_epoch=True, sync_dist=True)
+
+            self.train_confm.update(preds, labels)
+    
+    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        if not trainer.validating and not trainer.sanity_checking:
+            confm_array = self.train_confm.compute()
+            if trainer.is_global_zero:
+                self._log_confusion_matrix(confm_array.cpu().numpy(), "train", pl_module.global_step, pl_module.current_epoch)
+            self.train_confm.reset()
+
+    def on_validation_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int) -> None:
+        if not trainer.sanity_checking:
+            pl_module.log("global_step", int(pl_module.global_step), on_step=True, on_epoch=False, sync_dist=False, rank_zero_only=True)
+            pl_module.log("current_epoch", int(pl_module.current_epoch), on_step=True, on_epoch=False, sync_dist=False, rank_zero_only=True)
+
+            preds, labels = outputs["preds"], batch[1]
+            pl_module.log_dict(self.val_metrics(preds, labels), on_step=True, on_epoch=True, sync_dist=True)
+
+            self.val_confm.update(preds, labels)
+    
+    def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        if not trainer.sanity_checking:
+            confm_array = self.val_confm.compute()
+            if trainer.is_global_zero:
+                self._log_confusion_matrix(confm_array.cpu().numpy(), "val", pl_module.global_step, pl_module.current_epoch)
+            self.val_confm.reset()
+
+    def teardown(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
+        if self.log_to_wandb:
+            wandb.finish()
+
+    def _log_confusion_matrix(self, matrix: NDArray, split: Literal["train", "val", "test"], step: int, epoch: int):
+        name = f"{split}_confusion_matrix"
+        confm_dir = fs.get_new_dir(self.experiments_dir / "confm")
+
+        np.save(confm_dir / f"{name}_step={step}_epoch={epoch}.npy", matrix)
+
+        fig = get_confusion_matrix_plot(matrix, self.dataset.class_names)
+        if self.log_to_wandb:
+            wandb.log({
+                name: fig,
+                "global_step": step, 
+                "current_epoch": epoch,
+            })
+        fig.savefig(confm_dir / f"{name}_step={step}_epoch={epoch}.png") 
+
+class Old_ClassificationLogger(Callback):
     def __init__(self, config: ExperimentConfig):
         self.log_every_n_steps: int = config.log_params["log_every_n_steps"]
         self.log_every_n_epochs: int = config.log_params["log_every_n_epochs"]
@@ -360,4 +471,4 @@ def get_ckpt_logger(config):
 
 def get_classification_logger(config):
     logger.info(f"logging classification metrics to {config.experiments_dir}")
-    return ClassificationLogger(config)
+    return ClassificationMetricsLogger(config)
