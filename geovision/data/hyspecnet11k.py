@@ -48,8 +48,6 @@ logger = logging.getLogger(__name__)
 # QL_QUALITY_CLOUD:
 # QL_QUALITY_TESTFLAGS:
 
-# :subset is set to unsup for now, since annotations might be added in the future 
-
 class HySpecNet11k:
     local = Path.home() / "datasets" / "hyspecnet11k"
     num_images = 11483
@@ -59,6 +57,21 @@ class HySpecNet11k:
     band_idxs = tuple(sorted(set(range(1, 225)) - set(range(127,142)) - set(range(161, 168)))) # subset of bands to read using rasterio
     num_bands = 202 # after removing water absorption bands
 
+    index_df_schema = pa.DataFrameSchema(
+        columns={
+            "image_path": pa.Column(str, coerce=True),
+            "file_name": pa.Column(str, coerce=True),
+        },
+        index=pa.Index(int)
+    )
+
+    default_config = DatasetConfig(
+        random_seed=42,
+        image_pre=T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)]),
+        train_aug=T.Compose([T.RandomHorizontalFlip(0.5), T.RandomVerticalFlip(0.5)]),
+        eval_aug=T.Identity()
+    )
+
     @classmethod
     def extract(cls): ...
 
@@ -66,9 +79,9 @@ class HySpecNet11k:
     def download(cls): ...
 
     @classmethod
-    def load(cls, table: Literal["index", "spatial"], src: Literal["staging", "imagefolder", "hdf5"], subset: Literal["unsup"] = "unsup") -> pd.DataFrame:
+    def load(cls, table: Literal["index", "spatial"], src: Literal["staging", "imagefolder", "hdf5"], subset: Literal["hyspecnet11k"] = "hyspecnet11k") -> pd.DataFrame:
         assert src in ("staging", "imagefolder", "hdf5")
-        assert subset == "unsup"
+        assert subset == "hyspecnet11k"
 
         if src == "hdf5":
             return pd.read_hdf(cls.local/"hdf5"/"hyspecnet11k.h5", key = table, mode = 'r')
@@ -130,12 +143,12 @@ class HySpecNet11k:
                 spatial_df.to_hdf(staging_path/"metadata.h5", key = "spatial", mode = "r+")
             
     @classmethod
-    def transform(cls, to: Literal["imagefolder", "hdf5"], subset: Literal["unsup"] = "unsup", drop_water_abs_bands: bool = True): 
+    def transform(cls, to: Literal["imagefolder", "hdf5"], subset: Literal["hyspecnet11k"] = "hyspecnet11k", drop_water_abs_bands: bool = True): 
         assert to in ("imagefolder", "hdf5")
-        assert subset == "unsup"
+        assert subset == "hyspecnet11k"
 
-        index_df = cls.load('index', 'staging', 'unsup')
-        spatial_df = cls.load('spatial', 'staging', 'unsup')
+        index_df = cls.load('index', 'staging', subset)
+        spatial_df = cls.load('spatial', 'staging', subset)
 
         if to == "imagefolder": # copy to :local/imagefolder/images, and create :local/imagefolder/metadata.h5 with image_paths updated
             images_path = fs.get_new_dir(cls.local / "imagefolder" / "images")
@@ -148,8 +161,8 @@ class HySpecNet11k:
             else:
                 shutil.copy(row["image_path"], images_path/f"{row["image_name"]}.tif")
 
-            index_df["image_path"] = str(images_path) + index_df["image_name"].astype(str) + ".tif"
-            index_df.to_hdf(images_path.parent/"metadata.h5", key = "index", mode = "w")
+            index_df["image_path"] = index_df["image_name"].astype(str) + ".tif"
+            index_df.drop(columns=["image_name"]).to_hdf(images_path.parent/"metadata.h5", key = "index", mode = "w")
             spatial_df.to_hdf(images_path.parent/"metadata.h5", key = "spatial", mode = "r+")
            
         elif to == "hdf5": 
@@ -163,5 +176,82 @@ class HySpecNet11k:
                     with rio.open(row["image_path"]) as raster:
                         images[idx] = raster.read(cls.band_idxs)
             
-            index_df.drop(columns = "image_path").to_hdf(hdf5_path, key = 'index', mode = 'r+')
-            spatial_df.to_hdf(hdf5_path, key = 'spatial', mode = 'r+')
+            index_df.to_hdf(hdf5_path, key = 'index', mode = 'r+')
+            spatial_df.to_hdf(hdf5_path, key = "spatial", mode = 'r+')
+    
+class HySpecNet11k_Imagefolder(Dataset):
+    name = "hyspecnet11k"
+    task = "unsupervised"
+    subtask = "pretraining"
+    storage = "imagefolder"
+    class_names = tuple() 
+    num_classes = 0 
+    root = HySpecNet11k.local/"imagefolder"/"images"
+    schema = HySpecNet11k.index_df_schema 
+    config = HySpecNet11k.default_config
+    loader = HySpecNet11k.load
+    metadata_group_prefix = None 
+
+    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"], config: Optional[DatasetConfig] = None):
+        super().__init__(split, config)
+        self.df = self.index_df.assign(df_idx = lambda df: df.index).reset_index(drop = True)
+        self.df["image_path"] = self.df["image_path"].apply(lambda x: str(Path(self.root, x)))
+
+        # NOTE: Temporary, remove if entire imagefolder is extracted
+        image_exists_filter = self.df["image_path"].apply(lambda x: Path(x).is_file())
+        self.df = self.df[image_exists_filter].reset_index(drop=True)
+
+    def __len__(self) -> int:
+        return len(self.df)
+    
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+        idx_row = self.df.iloc[idx]
+        image: NDArray = iio.imread(idx_row["image_path"], extension=".tif") # C, H, W
+
+        if self.split != "all":
+            image = image.transpose(1,2,0) # H, W, C
+            image = self.config.image_pre(image) # C, H, W
+        if self.split in ("train", "trainvaltest"):
+            image = self.config.train_aug(image)
+        elif self.split in ("val", "test"):
+            image = self.config.eval_aug(image)
+
+        return image, idx_row["df_idx"]
+
+class HySpecNet11k_HDF5(Dataset):
+    name = "hyspecnet11k"
+    task = "unsupervised"
+    subtask = "pretraining"
+    storage = "hdf5"
+    class_names = tuple() 
+    num_classes = 0 
+    root = HySpecNet11k.local/"hdf5"/"hyspecnet11k.h5"
+    schema = HySpecNet11k.index_df_schema 
+    config = HySpecNet11k.default_config
+    loader = HySpecNet11k.load
+    metadata_group_prefix = None 
+
+    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"], config: Optional[DatasetConfig] = None):
+        super().__init__(split, config)
+        self.df = self.index_df.assign(df_idx = lambda df: df.index).drop(columns = ["image_path"]).reset_index(drop = True)
+    
+    def __len__(self) -> int:
+        return len(self.df)
+    
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+        idx_row = self.df.iloc[idx]
+
+        with h5py.File(self.root, mode = 'r') as f:
+            image: NDArray = f["images"][idx_row["df_idx"]] # C, H, W
+
+        if self.split != "all":
+            image = image.transpose(1,2,0)
+            image = self.config.image_pre(image)
+        if self.split in ("train", "trainvaltest"):
+            image = self.config.train_aug(image)
+        elif self.split in ("val", "test"):
+            image = self.config.eval_aug(image)
+
+        return image, idx_row["df_idx"]
+
+
