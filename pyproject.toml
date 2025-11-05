@@ -3,6 +3,7 @@ authors = [{name = "Sambhav Chandra", email = "vader.sam10@gmail.com"}]
 name = "geovision"
 requires-python = ">= 3.12"
 version = "0.1.0"
+dependencies = ["names-generator>=0.2.0,<0.3"]
 
 [build-system]
 build-backend = "hatchling.build"
@@ -68,4 +69,4 @@ dev = ["cuda126", "devel"]
 attrib = ["cuda126", "attribution"]
 
 [dependency-groups]
-devel = ["memory-profiler>=0.61.0,<0.62"]
+devel = ["memory-profiler>=0.61.0,<0.62", "names-generator>=0.2.0,<0.3"]
