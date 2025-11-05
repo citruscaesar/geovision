@@ -9,7 +9,7 @@ from geovision.models.blocks import ResidualBlock
 
 logger = logging.getLogger(__name__)
 
-class ResNetFeatureExtractor(torch.nn.Module):
+class ResNet_Encoder(torch.nn.Module):
     valid_weight_inits = ("random", "torchvision", "torchgeo", "url", "path")
     valid_residual_blocks = ("basic", "bottleneck", "basic_pre", "bottleneck_pre")
     valid_attention_blocks = ("none", "squeeze_and_excitation", "channel", "cbam")
