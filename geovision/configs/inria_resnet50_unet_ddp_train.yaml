@@ -2,7 +2,7 @@ project_name: inria
 run_name: unet_resnet50_on_inria 
 random_seed: 42
 
-trainer_params:
+trainer_kwargs:
   max_epochs: 10
   #strategy: 'ddp'
   #devices: 4
@@ -10,52 +10,65 @@ trainer_params:
   num_sanity_val_steps: 0
   use_distributed_sampler: True
 
-log_params:
+logger_kwargs:
   log_to_h5: False 
   log_to_csv: False 
   log_to_wandb: False 
-  wandb_init_params:
+  log_to_tensorboard: False
+  wandb_init_kwargs:
     tags: ["inria", "resnet50"]
     notes: "testing building segmentation" 
   log_every_n_steps: 10 
   log_every_n_epochs: 1
   log_models: True 
 
-dataset_name: inria.Inria_Building_Segmentation_HDF5
-dataset_params:
-  df: null 
-  tabular_sampler_name: "stratified" 
-  tabular_sampler_params:
-    val_frac: 0.15 
-    test_frac: 0.15
-    split_on: location 
-  spatial_sampler_name: null 
-  spatial_sampler_params:
-    tile_size: 256 
-    tile_stride: 200 
-  spectral_sampler_name: null 
-  spectral_sampler_params: null
-  batch_transform_name: null 
-  batch_transform_params: 
-    alpha: 0.4
-  transforms: |
-    from torch import float32
-    from torchvision.transforms import v2 as T
-    image_pre = T.Compose([
-      T.ToImage(),
-      T.ToDtype(float32, scale = True),
-    ])
-    target_pre = T.Compose([
-      T.ToImage(),
-      T.ToDtype(float32, scale = False),
-    ])
-    train_aug = T.Compose([
-      T.RandomVerticalFlip(0.5),
-      T.RandomHorizontalFlip(0.5),
-    ])
-    eval_aug = T.Identity()
+# either provide a df, or specify the various samplers
+dataset:
+  name: Inria_Building_Segmentation_HDF5
+  src: geovision.data.inria 
+  kwargs:
+    df: null 
+    tabular_sampler:
+      name: stratified_tabular_sampler
+      src: geovision.data.samplers
+      kwargs:
+        val_frac: 0.15 
+        test_frac: 0.15
+        split_on: location 
+    spatial_sampler: null
+      # name: tiling
+      # src: geovision.data.samplers
+      # kwargs:
+        # tile_size: 256 
+        # tile_stride: 200 
+    spectral_sampler: null
+    temporal_sampler: null
+
+    transforms: |
+      from torch import float32
+      from torchvision.transforms import v2 as T
+      image_pre = T.Compose([
+        T.ToImage(),
+        T.ToDtype(float32, scale = True),
+      ])
+      target_pre = T.Compose([
+        T.ToImage(),
+        T.ToDtype(float32, scale = False),
+      ])
+      train_aug = T.Compose([
+        T.RandomVerticalFlip(0.5),
+        T.RandomHorizontalFlip(0.5),
+      ])
+      eval_aug = T.Identity()
+
+    batch_transform:
+      name: CutMix 
+      src: torchvision.transforms.v2 
+      kwargs:
+        alpha: 0.4
+
   
-dataloader_params:
+dataloader_kwargs:
   # effective batch size = batch_size // gradient_accumulation
   batch_size: 64 
   gradient_accumulation: 1
@@ -64,54 +77,109 @@ dataloader_params:
   pin_memory: True 
   prefetch_factor: 8 
 
-model_name: ClassificationModule 
-model_params:
-  ckpt_path: null
-  encoder: geovision.models.resnet.ResNetFeatureExtractor
-  encoder_params:
-    layers: 50 
-    residual_block_name: bottleneck 
-    weights_init: torchgeo 
-    weights_param: ResNet50_Weights.FMOW_RGB_GASSL
-  decoder: geovision.models.unet.UNetDecoder
-  decoder_params:
-    upsampling: bilinear
-    central_block: ResidualBlock
-    central_block_params:
-      residual_path: basic 
-      identity_path: identity 
-    conv_block: ResidualBlock
-    conv_block_params:
-      residual_path: basic 
-      identity_path: identity
+module:
+  name: ClassificationModule 
+  src: geovision.models.interfaces
+  kwargs:
+    ckpt_path: null
+    model_encoder:
+      name: ResNet_Encoder
+      src: geovision.models.resnet
+      kwargs:
+        layers: 50 
+        residual_block_name: bottleneck 
+        weights:
+          name: ResNet50_Weights.FMOW_RGB_GASSL
+          src: torchgeo 
+          kwargs: null
+        # torchvision, torchgeo, timm, path, url
+        # weights_init: torchgeo 
+        # weights_param: ResNet50_Weights.FMOW_RGB_GASSL
+
+    model_decoder: 
+      name: UNet_Decoder
+      src: geovision.models.unet
+      kwargs:
+        upsampling: bilinear
+        central_block: 
+          name: ResidualBlock
+          src: geovision.models.resnet
+          kwargs:
+            residual_path: basic 
+            identity_path: identity 
+        conv_block:
+          name: ResidualBlock
+          src: geovision.models.resnet
+          kwargs:
+            residual_path: basic 
+            identity_path: identity
     
-metric_name: JaccardIndex
-metric_params: null
+# used for validation
+# for segmentation: mIoU, Dice, Pixel Accuracy
+ # - name: name of the metric constructor / class
+  # - src: name of the module / library 
+  # - kwargs: dict of init kwargs for the class, defaults to none
+  # - key: name to display on chart / legend, defaults to name
+
+# confusion matrix is always tracked for classification
+
+metrics:
+  - name: JaccardIndex 
+    src: torchmetrics 
+    kwargs:
+      sync_on_compute: True
+    key: IoU 
  
-criterion_name: CrossEntropyLoss
-criterion_params:
-  reduction: mean
+criterion:
+  name: CrossEntropyLoss
+  src: torch.nn
+  kwargs:
+    reduction: mean
 
-optimizer_name: SGD 
-optimizer_params:
-  lr: 5.0e-6
-  momentum: 0.9
-  weight_decay: 5.0e-4
+optimizer:
+  name: SGD 
+  src: torch.optim
+  kwargs:
+    lr: 5.0e-6
+    momentum: 0.9
+    weight_decay: 5.0e-4
 
-warmup_scheduler_name: LinearLR 
-warmup_scheduler_params:
-  start_factor: 0.001 
-  end_factor: 0.9 
-  total_iters: 200 
-warmup_steps: 200 
+schedulers:
+  - name: LinearLR 
+    src: torch.optim.lr_scheduler
+    kwargs:
+      start_factor: 0.001 
+      end_factor: 0.9 
+      total_iters: 200 
 
-scheduler_name: LinearLR 
-scheduler_params:
-  start_factor: 1.0 
-  end_factor: 0.001 
-  total_iters: 5
+  - name: LinearLR 
+    src: torch.optim.lr_scheduler
+    kwargs:
+      start_factor: 1.0 
+      end_factor: 0.001 
+      total_iters: 5
 
-scheduler_config_params:
+scheduler_milestones: [200]
+
+scheduler_kwargs:
   interval: epoch 
   frequency: 3
   monitor: train_loss_epoch 
+  
+# warmup_scheduler: LinearLR 
+# warmup_scheduler_kwargs:
+  # start_factor: 0.001 
+  # end_factor: 0.9 
+  # total_iters: 200 
+# warmup_steps: 200 
+
+# scheduler_name: LinearLR 
+# scheduler_kwargs:
+  # start_factor: 1.0 
+  # end_factor: 0.001 
+  # total_iters: 5
+
+# scheduler_config_kwargs:
+  # interval: epoch 
+  # frequency: 3
+  # monitor: train_loss_epoch 

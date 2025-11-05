@@ -1,25 +1,32 @@
-from typing import Any, Mapping, Optional, Literal
-from numpy.typing import NDArray
+from typing import Any, Mapping, Optional, Literal, TYPE_CHECKING
 
 import wandb
 import h5py
 import torch
+import logging
 import torchmetrics
 import numpy as np
 import matplotlib.pyplot as plt
+
 from pathlib import Path
 from lightning import Callback, LightningModule, Trainer
-from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import Logger, CSVLogger, WandbLogger
 
-from geovision.data import Dataset
-from geovision.experiment.config import ExperimentConfig
 from .utils import plot as cfm_plot
 
-import logging
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+    from matplotlib.figure import Figure
+
+    from geovision.data import Dataset
+    from geovision.experiment.config import ExperimentConfig
+
 logger = logging.getLogger(__name__)
 
-# TODO: Write new HDF5 Logger subclassing from lightning.pytorch.loggers.Logger
+
+# TODO:
+class HDF5Logger(Logger): ...
 
 class HDF5ExperimentWriter:
     def __init__(self, experiments_dir: Path):
@@ -81,40 +88,43 @@ class HDF5ExperimentWriter:
 class ClassificationMetricsLogger(Callback):
     def __init__(self, config: ExperimentConfig):
 
-        self.log_to_csv: bool = config.log_params["log_to_csv"]
+        self.log_to_csv: bool = config.log_kwargs["log_to_csv"]
         # if self.log_to_csv:
             # NOTE: check in setup if a csv logger is provided if True
              
-        self.log_to_wandb: bool = config.log_params["log_to_wandb"]
+        self.log_to_wandb: bool = config.log_kwargs["log_to_wandb"]
         if self.log_to_wandb:
             # NOTE: check in setup if a wandb logger is provided if True
-            # NOTE: verify the wandb init params
-            self.wandb_init_params: dict = config.wandb_init_params
+            # NOTE: verify the wandb init kwargs
+            self.wandb_init_kwargs: dict = config.wandb_init_kwargs
 
         # NOTE: Write an h5 logger (or modify the older one)
-        # self.log_to_h5: bool = config.log_params["log_to_h5"]
+        # self.log_to_h5: bool = config.log_kwargs["log_to_h5"]
 
         # NOTE: log_every_n_steps is passed to the Trainer to control logging frequency
-        self.log_every_n_steps: int = config.log_params["log_every_n_steps"]
-        self.log_every_n_epochs: int = config.log_params["log_every_n_epochs"]
+        self.log_every_n_steps: int = config.log_kwargs["log_every_n_steps"]
+        self.log_every_n_epochs: int = config.log_kwargs["log_every_n_epochs"]
 
         self.experiments_dir: Path = config.experiments_dir 
         self.batch_size: int = config.dataloader_config.batch_size // config.dataloader_config.gradient_accumulation
-        self.learning_rate: float = config.optimizer_params["lr"]
+        self.learning_rate: float = config.optimizer_kwargs["lr"]
         self.dataset: Dataset = config.dataset_constructor
-        self.monitor_metric_name: str = config.metric_name
+        #self.monitor_metric_name: str = config.metric_name
 
-        # NOTE: write a metrics config to list which metrics to log 
-        metrics = torchmetrics.MetricCollection({
-            "acc": config.get_metric("Accuracy", {"sync_on_compute": True}),
-            "f1": config.get_metric("F1Score", {"sync_on_compute": True}),
-        })
-        self.train_metrics = metrics.clone(prefix = "train_")
-        self.val_metrics = metrics.clone(prefix = "val_") 
-
-        confm = config.get_metric("ConfusionMatrix", {"sync_on_compute": True})
-        self.train_confm = confm.clone()
-        self.val_confm = confm.clone()
+        self.train_metrics = torchmetrics.MetricCollection({
+                "acc": torchmetrics.Accuracy(**config._get_torchmetrics_kwargs()),
+                "f1": torchmetrics.F1Score(**config._get_torchmetrics_kwargs()),
+            }, 
+            prefix = "train_", 
+        )
+        self.val_metrics = torchmetrics.MetricCollection(
+            {key : metric_fn(**kwargs) for (key, metric_fn, kwargs) in config.metric_list}, 
+            prefix = "val_"
+        )
+        self.test_metrics = self.val_metrics.clone(prefix = "test_")
+        
+        self.val_confm = torchmetrics.ConfusionMatrix(config._get_torchmetrics_kwargs())
+        self.test_confm = self.val_confm.clone()
     
     def on_train_start(self, trainer, pl_module):
         self.train_metrics.to(pl_module.device)
@@ -189,19 +199,19 @@ class ClassificationMetricsLogger(Callback):
 
 class Old_ClassificationLogger(Callback):
     def __init__(self, config: ExperimentConfig):
-        self.log_every_n_steps: int = config.log_params["log_every_n_steps"]
-        self.log_every_n_epochs: int = config.log_params["log_every_n_epochs"]
-        # self.log_model_outputs: int = config.log_params["log_model_outputs"]  # -1 means log all, 0 means none, int < num_classes means top_k
-        self.log_to_h5: bool = config.log_params["log_to_h5"]
-        self.log_to_wandb: bool = config.log_params["log_to_wandb"]
-        self.log_to_csv: bool = config.log_params["log_to_csv"]
+        self.log_every_n_steps: int = config.log_kwargs["log_every_n_steps"]
+        self.log_every_n_epochs: int = config.log_kwargs["log_every_n_epochs"]
+        # self.log_model_outputs: int = config.log_kwargs["log_model_outputs"]  # -1 means log all, 0 means none, int < num_classes means top_k
+        self.log_to_h5: bool = config.log_kwargs["log_to_h5"]
+        self.log_to_wandb: bool = config.log_kwargs["log_to_wandb"]
+        self.log_to_csv: bool = config.log_kwargs["log_to_csv"]
 
         if self.log_to_wandb:
-            self.wandb_init_params: dict = config.wandb_init_params
+            self.wandb_init_kwargs: dict = config.wandb_init_kwargs
 
         self.experiments_dir: Path = config.experiments_dir 
         self.batch_size: int = config.dataloader_config.batch_size // config.dataloader_config.gradient_accumulation
-        self.learning_rate: float = config.optimizer_params["lr"]
+        self.learning_rate: float = config.optimizer_kwargs["lr"]
         self.dataset: Dataset = config.dataset_constructor
         self.monitor_metric_name: str = config.metric_name
 
@@ -250,7 +260,7 @@ class Old_ClassificationLogger(Callback):
                 self.h5_run.add_metadata("class_names", self.dataset.class_names)
                 self.h5_run.add_metadata("monitored_metric", self.monitor_metric_name)
             if self.log_to_wandb: 
-                self.wandb_run = wandb.init(**self.wandb_init_params)
+                self.wandb_run = wandb.init(**self.wandb_init_kwargs)
 
     def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: dict[str, Any]):
         if trainer.is_global_zero:
@@ -437,23 +447,23 @@ class Old_ClassificationLogger(Callback):
             if self.log_to_wandb:
                 self.wandb_run.finish()
 
-def get_confusion_matrix_plot(mat: NDArray, class_names: tuple[str, ...]):
+def get_confusion_matrix_plot(mat: NDArray, class_names: tuple[str, ...]) -> Figure:
     fig, ax = plt.subplots(1, 1, figsize = (10,8), layout = "constrained")
     cfm_plot(ax, mat, class_names)
     return fig
 
-def get_csv_logger(config):
+def get_csv_logger(config) -> CSVLogger:
     return CSVLogger(
         save_dir=config.experiments_dir.parent.parent,
         name=config.experiments_dir.parent.name,
         version=config.experiments_dir.name,
-        flush_logs_every_n_steps=config.log_params["log_every_n_steps"],
+        flush_logs_every_n_steps=config.log_kwargs["log_every_n_steps"],
     )
 
-def get_wandb_logger(config: ExperimentConfig):
-    return WandbLogger(**config.wandb_logger_params)
+def get_wandb_logger(config: ExperimentConfig) -> WandbLogger:
+    return WandbLogger(**config.wandb_logger_kwargs)
 
-def get_ckpt_logger(config):
+def get_ckpt_logger(config) -> ModelCheckpoint:
     # min_metrics = ("loss",)
     return ModelCheckpoint(
         dirpath=config.experiments_dir / "ckpts",
@@ -461,14 +471,15 @@ def get_ckpt_logger(config):
         auto_insert_metric_name=True,
         # monitor=f"val_{config.metric_name}_epoch",
         # mode="min" if (config.metric_name in min_metrics) else "max",
-        save_top_k=config.log_params["log_models"],
-        every_n_epochs=None,
-        every_n_train_steps=None,
-        train_time_interval=None,
-        save_on_train_epoch_end=False,
+        save_top_k=config.log_kwargs["log_models"], #
+        every_n_epochs=None, # don't check monitor and save ckpt, at epoch intervals
+        every_n_train_steps=None, # don't save ckpt during training, at step intervals
+        train_time_interval=None, # dont't save ckpt during training, at time intervals
+        save_on_train_epoch_end=False, # don't save ckpt during training, at the end of epoch
         enable_version_counter=True,
     )
 
 def get_classification_logger(config):
     logger.info(f"logging classification metrics to {config.experiments_dir}")
     return ClassificationMetricsLogger(config)
+

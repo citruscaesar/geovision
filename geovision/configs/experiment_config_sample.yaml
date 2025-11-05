@@ -1,0 +1,221 @@
+# configure project directory: ~/experiments/project_name/run_name/
+project_name: !!str name of the overall project # required
+run_name: !!str name of this particular run # optional str or int, randomly assigned using names_generator if not provided. 
+random_seed: !!int seed for rng # optional, defaults to 42. Use in conjuntion with trainer_kwargs.deterministic to configure reproduciblity
+
+# configure lightning.trainer, ref: https://lightning.ai/docs/pytorch/stable/common/trainer.html
+trainer_kwargs:
+  ckpt_path: !!str path to checkpoint file for resuming training. # defaults to none (start from scratch, epoch=0, step=0). restores model weights, optimizer state, and counters.
+  max_epochs: !!int training stops when current_epoch reaches this. # if resuming from epoch n, runs (max_epochs - n) more epochs.
+  min_epochs: !!int minimum epochs before early stopping is allowed # defaults to none, prevents premature stopping.
+  precision: !!str numerical precision # to configure quantization strategy for training. defaults to "32-true" (f32). other options are "16-mixed" (f16), "bf16-mixed" (bf16), "64-true" (f32). lower precision -> faster inference and less memory usage, at the cost of lower accuracy.
+  benchmark: !!bool enable cudnn auto-tuner # defaults to none. auto-tunes kernels for fixed input sizes. enable for cnns with fixed input; disable for variable-length sequences.
+ 
+  # debugging flags 
+  fast_dev_run: !!bool quick debugging run # run trainer with ckpt, logging and callbacks disabled. defaults to false (disabled). pass true to test w/ 1 batch, or an integer to test w/ that many batches 
+  num_sanity_val_steps: !!int val batches to pass before training, to catch bugs in model.forward / val_step # defaults to 2. use 0 to skip, -1 for entire validation set. catches validation bugs early.
+  limit_train_batches: !!int limit training batches # optional for debugging, defaults to full training set. use int for a set number of batches or float for a fraction of the training set.
+  limit_val_batches: !!int limit validation batches: # optional, defaults to 1.0. use float(fraction) or int(count).
+  limit_test_batches: !!int limit testing batches: # optional, defaults to 1.0. use float(fraction) or int(count).
+  overfit_batches: !!int overfit on this many(int)/fraction(float) of the train & val set # optional, 
+
+  # paralellism related kwargs 
+  strategy: !!str distributed/parallel training strategy # defaults to none -> single gpu training. use 'ddp' or 'fsdp' for data/model parallelism
+  devices: !!int number of accelerators to use # defaults to 1, use to configure :strategy for multi-device training
+  use_distributed_sampler: !!bool true if using a distributed strategy
+  accelerator: !!str hardware accelerator # defaults to "auto" (portable). choose from "cpu", "gpu", "tpu", "mps".
+  devices: !!int number of devices or device ids # defaults to 1. can be int (e.g., 4), list ([0, 2, 3]), or "auto". effective batch size = batch_size * devices in ddp.
+  num_nodes: !!int number of compute nodes for multi-node training # defaults to 1. requires proper cluster setup.
+  use_distributed_sampler: !!bool auto-wrap sampler for distributed training # defaults to true. keep true unless implementing custom distributed sampling.
+  sync_batchnorm: !!bool synchronize batchnorm across gpus # defaults to false. use when batch_size_per_gpu < 8-16 for more accurate statistics (adds communication overhead).
+
+  # misc kwargs
+  max_steps: !!int training stops when global_step reaches this # defaults to -1 (disabled). if configures, overrides max_epochs if reached first.
+  inference_mode: !!bool use torch.inference_mode during val/test # defaults to true, which is faster than torch.no_grad().
+  deterministic: !!bool weather to enforce reproducibility # defaults to false (for production). set true for deterministic for papers/debugging, but 10-30% slower. or use "warn"
+  gradient_clip_algorithm: !!str method to calculate gradient clipping bounds # defaults to "norm", but can be switched to "value". always use "norm" (more principled).
+  gradient_clip_val: !!float gradient clipping bounds # defaults to none. clips gradients to prevent explosion. (?) use 1.0 for transformers, 5.0-10.0 for cnns if needed.
+  reload_dataloaders_every_n_epochs: !!int reload dataloaders every n epochs # defaults to 0. use 1 for dynamic augmentation or changing datasets.
+
+  # logging, val_checking flags. DO NOT configure here, overriden by logger_kwargs.
+  log_every_n_steps: !!int logging frequency in steps # defaults to 50. lower for more frequent logging, higher for less disk usage.
+  check_val_every_n_epoch: !!int # run validation every n epochs (default: 1). increase to speed up training when validation is expensive.
+  val_check_interval: # validation frequency: float (0.0-1.0) for epoch fraction or int for batch count (default: 1.0). example: 0.5 validates twice per epoch.
+
+log_kwargs:
+  log_every_n_steps: !!int logging frequency (steps) # requried, interval at which step_metrics are aggregated and logged. overrides the same in trainer_kwargs
+  log_every_n_epochs: !!int logging frequency (epochs) # required, interval at which validation epoch is run, metrics are aggregated and logged, and model checkpoints are logged
+  log_models: !!bool whether to log model checkpoints # required, kwarg for ModelCheckpoint(save_top_k). set True to save a ckpt at the end of each val epoch (log_every_n_epochs). set False to disable checkpointing.
+
+  log_to_h5: !!bool # save metrics to hdf5 format
+  log_to_csv: !!bool # save metrics to csv format
+  log_to_tensorboard: !!bool # save metrics to tensorboard 
+  log_to_wandb: !!bool # log to weights & biases
+  wandb_init_kwargs: # w&b initialization parameters (tags, notes, etc.)
+    tags: !!seq # list of tags for organizing runs
+    notes: !!str # description of the run
+  
+dataset:
+  name: !!str dataset class name
+  src: !!str source module
+  kwargs:
+    df: !!str path to tabular metadata 
+    tabular_sampler_name: !!str # sampler for train/val/test split: "stratified", "random", etc.
+    tabular_sampler_kwargs:
+      val_frac: !!float # validation set fraction (e.g., 0.15 for 15%)
+      test_frac: !!float # test set fraction (e.g., 0.15 for 15%)
+      split_on: !!str # column to stratify on (e.g., "location", "class")
+    spatial_sampler_name: !!str # spatial sampling strategy for large images (e.g., "random", "grid")
+    spatial_sampler_kwargs:
+      tile_size: !!int # spatial tile dimensions (e.g., 256 for 256×256 patches)
+      tile_stride: !!int # stride between tiles (overlap if < tile_size)
+    spectral_sampler_name: !!str # spectral band selection strategy (optional)
+    spectral_sampler_kwargs: # parameters for spectral sampling
+    batch_transform_name: !!str # batch-level augmentation (e.g., mixup, cutmix)
+    batch_transform_kwargs: # parameters for batch transform
+      alpha: !!float # mixing parameter for mixup/cutmix
+    transforms: !!str # python code defining image_pre, target_pre, train_aug, eval_aug transforms using torchvision.transforms.v2
+
+dataloader_kwargs:
+  batch_size: !!int # batch size per device. effective batch size = batch_size * devices * accumulate_grad_batches
+  gradient_accumulation: !!int # synonym for accumulate_grad_batches (deprecated, use trainer_kwargs.accumulate_grad_batches)
+  num_workers: !!int # worker processes for data loading (typical: 4-16). more workers = faster loading but more memory.
+  persistent_workers: !!bool # keep workers alive between epochs (default: false). set true with num_workers>0 for faster epoch transitions.
+  pin_memory: !!bool # pin memory for faster gpu transfer (default: false). set true when training on gpu.
+  prefetch_factor: !!int # batches to prefetch per worker (default: 2). increase (4-8) for slow data loading.
+  # configured in dataloader kwargs
+  accumulate_grad_batches: !!int number of batches to accumulate gradients before optimizer step # defaults to 1) 
+  # effective batch size = batch_size * accumulate_grad_batches * num_gpus. use 2-8 for large models when gpu memory is limited.
+
+module:
+  name: !!str # lightning module class name (e.g., classificationmodule, segmentationmodule)
+  src: !!str # module source (e.g., geovision.models.interfaces)
+  kwargs: !!dict
+    ckpt_path: !!str # checkpoint to load model weights (optional)
+
+    model_encoder: # encoder/backbone configuration
+      name: !!str # encoder class name (e.g., resnet_encoder, vit_encoder)
+      src: !!str # module source
+      kwargs:
+        layers: !!int # model depth (e.g., 50 for resnet-50)
+        residual_block_name: !!str # block type (e.g., "bottleneck", "basic")
+        weights: # pretrained weights configuration
+          name: !!str # weights identifier (e.g., resnet50_weights.imagenet1k_v2)
+          src: !!str # weights source: "torchvision", "torchgeo", "timm", "path", "url"
+          kwargs: # additional weights parameters
+
+    model_decoder: # decoder/head configuration (for segmentation, etc.)
+      name: !!str # decoder class name (e.g., unet_decoder, fcn_decoder)
+      src: !!str # module source
+      kwargs:
+        upsampling: !!str # upsampling method: "bilinear", "nearest", "transpose"
+        central_block: !!str # block between encoder and decoder
+        central_block_kwargs: # parameters for central block
+          residual_path: !!str # residual connection type
+          identity_path: !!str # identity/skip connection type
+        conv_block: !!str # convolutional block type for decoder
+        conv_block_kwargs: # parameters for conv blocks
+
+metrics:
+  - name: !!str # metric class name (e.g., jaccardindex, accuracy, f1score)
+    src: !!str # source module (e.g., torchmetrics, sklearn.metrics)
+    kwargs: # metric initialization parameters
+      sync_on_compute: !!bool # synchronize metric across processes (use true for distributed training)
+    key: !!str # display name for logging (optional, defaults to name)
+
+# ============================================================================
+# loss function (criterion) - torch.nn loss functions
+# ============================================================================
+# reference: https://pytorch.org/docs/stable/nn.html#loss-functions
+# common losses:
+#   classification: crossentropyloss (multi-class), bcewithlogitsloss (binary/multi-label)
+#   regression: mseloss (l2), l1loss, smoothl1loss, huberloss
+#   specialized: focalloss (imbalanced), ctcloss (sequences), tripletmarginloss (metric learning)
+
+criterion_name: !!str # loss function class name from torch.nn
+criterion_kwargs:
+  reduction: !!str # loss aggregation: "mean" (default, average over batch), "sum" (sum all losses), "none" (return per-element loss for custom weighting)
+  # crossentropyloss specific:
+  # weight: tensor of shape (num_classes,) for class weights. use with imbalanced datasets (weight[i] = 1 / class_frequency[i]).
+  # ignore_index: int (default: -100). ignore this target value in loss computation (e.g., 255 for unlabeled pixels in segmentation).
+  # label_smoothing: float in [0, 1] (default: 0). regularization to prevent overconfidence. use 0.1 for large-scale classification.
+  # bcewithlogitsloss specific:
+  # pos_weight: tensor for positive class weight. use for imbalanced binary (pos_weight = num_negative / num_positive).
+  # regression losses (smoothl1loss, huberloss):
+  # beta/delta: float threshold for switching from l2 to l1 behavior. lower = more aggressive outlier handling.
+
+# ============================================================================
+# optimizer - torch.optim optimizers
+# ============================================================================
+# reference: https://pytorch.org/docs/stable/optim.html
+# common optimizers:
+#   sgd: classic, good generalization for cnns. use with momentum=0.9, lr=0.1 (with scheduler).
+#   adam: fast convergence, general-purpose. typical lr=1e-3.
+#   adamw: adam with decoupled weight decay (preferred over adam). standard for transformers, lr=3e-4.
+#   rmsprop: good for rnns. typical lr=1e-3.
+# architecture recommendations:
+#   cnns: sgd (momentum=0.9, lr=0.1, weight_decay=1e-4) with cosineannealinglr
+#   transformers: adamw (lr=3e-4, weight_decay=0.01) with linear warmup + decay
+#   gans: adam (lr=2e-4, betas=[0.5, 0.999])
+
+optimizer_name: !!str # optimizer class name from torch.optim
+optimizer_kwargs:
+  lr: !!float # learning rate (most important hyperparameter). sgd: 0.1-0.001, adam/adamw: 1e-3 to 5e-5. scale linearly with batch size for distributed training. too high causes divergence; too low causes slow convergence.
+  # sgd specific:
+  momentum: !!float # momentum factor [0, 1] (default: 0). accumulates gradient history for faster convergence. use 0.9 for sgd in deep learning.
+  nesterov: !!bool # use nesterov momentum (default: false). requires momentum > 0. often converges slightly faster.
+  dampening: !!float # dampening for momentum (default: 0). rarely modified.
+  weight_decay: !!float # l2 regularization coefficient (default: 0). cnns: 1e-4 to 5e-4, transformers: 0.01-0.1. prevents overfitting. note: for adam use adamw for correct weight decay.
+  # adam/adamw specific:
+  betas: !!seq # (beta1, beta2) for running averages (default: [0.9, 0.999]). beta1: gradient mean decay, beta2: gradient variance decay. gans use [0.5, 0.999] for faster adaptation.
+  eps: !!float # numerical stability constant (default: 1e-8). prevents division by zero. use 1e-6 if encountering nan.
+  amsgrad: !!bool # use amsgrad variant (default: false). rarely needed; standard adam usually better.
+  # rmsprop specific:
+  alpha: !!float # smoothing constant (default: 0.99). decay rate for moving average of squared gradients.
+  centered: !!bool # centered rmsprop (default: false). normalizes by centered second moment.
+
+# ============================================================================
+# learning rate schedulers - torch.optim.lr_scheduler
+# ============================================================================
+# reference: https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+# modern practice: warmup (linearlr for first few hundred/thousand steps) + main scheduler (cosineannealinglr, linearlr, or reducelronplateau)
+# common schedulers:
+#   cosineannealinglr: smooth cosine decay from max to min lr. most popular for cnns and transformers.
+#   linearlr: linear decay. common for transformer fine-tuning.
+#   multisteplr: step decay at specific epochs. traditional cv (e.g., resnet papers).
+#   reducelronplateau: adaptive reduction when metric plateaus. good for exploration.
+#   onecyclelr: super-convergence with lr peak. requires tuning but can be faster.
+# recommendations:
+#   cnns: 5-10 epoch warmup + cosineannealinglr (t_max=max_epochs-warmup, eta_min=1e-6)
+#   transformers: 10k step warmup + linearlr (decay to 0) or cosineannealinglr
+#   fine-tuning: short/no warmup + reducelronplateau (patient, adaptive)
+
+warmup_scheduler_name: !!str # warmup scheduler class (usually linearlr). gradually increases lr from small value to base lr over initial steps. essential for transformers and large batches; recommended for all training.
+warmup_scheduler_kwargs:
+  start_factor: !!float # initial lr multiplier in (0, 1] (e.g., 0.001 for 1000x smaller start). lr starts at start_factor * base_lr. use 0.001-0.01 for transformers, 0.1 for cnns.
+  end_factor: !!float # final lr multiplier (default: 1.0 for full base lr). usually 1.0 to reach full base lr before main scheduler.
+  total_iters: !!int # warmup duration in steps/epochs (depends on interval). transformers: 10k-40k steps (bert uses 10k). cnns: 1000-5000 steps or 5-10 epochs. rule of thumb: 2-5% of total training.
+warmup_steps: !!int # number of warmup steps (typically equal to total_iters for logging/reference)
+
+scheduler_name: !!str # main lr scheduler class (e.g., cosineannealinglr, linearlr, multisteplr, reducelronplateau)
+scheduler_kwargs:
+  # linearlr:
+  start_factor: !!float # initial lr multiplier after warmup (usually 1.0)
+  end_factor: !!float # final lr multiplier (e.g., 0.0 to decay to zero, 0.01 for 1%)
+  total_iters: !!int # scheduler duration in steps/epochs (max_epochs - warmup_epochs or total_steps - warmup_steps)
+  # cosineannealinglr:
+  # t_max: !!int # cosine period (max_epochs - warmup_epochs for epoch-based; total_steps - warmup_steps for step-based)
+  # eta_min: !!float # minimum lr (default: 0). use 0 or 1e-6.
+  # multisteplr:
+  # milestones: !!seq # epochs to decay lr (e.g., [30, 60, 90])
+  # gamma: !!float # multiplicative factor (e.g., 0.1 for 10x reduction)
+  # reducelronplateau:
+  # mode: !!str # "min" (loss) or "max" (accuracy)
+  # factor: !!float # lr reduction factor (e.g., 0.1 or 0.5)
+  # patience: !!int # epochs to wait before reducing (e.g., 5-10)
+  # threshold: !!float # minimum improvement to count (e.g., 1e-4)
+
+scheduler_config_kwargs:
+  interval: !!str # when to step: "epoch" (after each epoch) or "step" (after each batch). use "epoch" for cnns (simpler), "step" for transformers (standard in bert/gpt).
+  frequency: !!int # step every n intervals (default: 1). usually keep at 1.
+  monitor: !!str # metric to track (required for reducelronplateau, ignored for others). use "val_loss_epoch" (recommended) or "val_acc_epoch". always monitor validation metrics, not training.

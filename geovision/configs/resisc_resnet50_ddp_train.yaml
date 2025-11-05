@@ -2,7 +2,7 @@ project_name: resisc45
 run_name: logging_test 
 random_seed: 42
 
-trainer_params:
+trainer_kwargs:
   max_epochs: 10
   strategy: 'ddp'
   devices: 4
@@ -10,11 +10,11 @@ trainer_params:
   num_sanity_val_steps: 0
   use_distributed_sampler: True
 
-log_params:
+log_kwargs:
   log_to_h5: False 
   log_to_wandb: False 
   log_to_csv: True 
-  wandb_init_params:
+  wandb_init_kwargs:
     tags: ["resisc45", "resnet50"]
     notes: "image classification" 
   log_every_n_steps: 10 
@@ -22,19 +22,19 @@ log_params:
   log_models: True 
 
 dataset_name: resisc45.Resisc45_HDF5_Classification
-dataset_params:
+dataset_kwargs:
   df: null 
   tabular_sampler_name: "stratified" 
-  tabular_sampler_params:
+  tabular_sampler_kwargs:
     val_frac: 0.15 
     test_frac: 0.15
     split_on: label_str 
   spatial_sampler_name: null 
-  spatial_sampler_params: null
+  spatial_sampler_kwargs: null
   spectral_sampler_name: null 
-  spectral_sampler_params: null
+  spectral_sampler_kwargs: null
   batch_transform_name: null 
-  batch_transform_params: null
+  batch_transform_kwargs: null
   transforms: |
     from torch import float32
     from torchvision.transforms import v2 as T
@@ -52,7 +52,7 @@ dataset_params:
     ])
     eval_aug = T.Identity()
   
-dataloader_params:
+dataloader_kwargs:
   # effective batch size = batch_size // gradient_accumulation
   batch_size: 64 
   gradient_accumulation: 1
@@ -62,43 +62,43 @@ dataloader_params:
   prefetch_factor: 8 
 
 model_name: ClassificationModule 
-model_params:
+model_kwargs:
   ckpt_path: null
   encoder: geovision.models.resnet.ResNetFeatureExtractor
-  encoder_params:
+  encoder_kwargs:
     layers: 50 
     residual_block_name: bottleneck 
     weights_init: torchgeo 
     weights_param: ResNet50_Weights.FMOW_RGB_GASSL
   decoder: geovision.models.blocks.LinearDecoderBlock
-  decoder_params:
+  decoder_kwargs:
     in_ch: 2048
     out_ch: 45
     weights_init: random
         
 metric_name: Accuracy 
-metric_params: null
+metric_kwargs: null
  
 criterion_name: CrossEntropyLoss
-criterion_params:
+criterion_kwargs:
   reduction: mean
 
 optimizer_name: Adam 
-optimizer_params:
+optimizer_kwargs:
   lr: 5.0e-6
   momentum: 0.9
   weight_decay: 5.0e-4
 
 # SquentialLR([Warmup_Scheduler(), DecayScheduler()], milestones=warmup_steps)
 warmup_scheduler_name: LinearLR 
-warmup_scheduler_params:
+warmup_scheduler_kwargs:
   start_factor: 0.001 
   end_factor: 0.99 
   total_iters: 50 
 warmup_steps: 50 
 
 scheduler_name: LinearLR 
-scheduler_params:
+scheduler_kwargs:
   start_factor: 1.0 
   end_factor: 0.001 
   total_iters: 10 
@@ -109,6 +109,6 @@ scheduler_params:
 # -> monitor[str]: metric to track/condition on for scheduler.step() like ReduceLROnPlateau
 # -> strict[bool]: default True. stop execution if monitor is not found in logged metrics 
 # -> name[str]: name to log if using the LearningRateMonitor callback
-scheduler_config_params:
+scheduler_config_kwargs:
   interval: epoch 
   monitor: train_loss_epoch 

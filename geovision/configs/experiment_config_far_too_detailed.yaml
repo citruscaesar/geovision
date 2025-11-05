@@ -1,0 +1,1359 @@
+project_name: !!str name of the overall project
+run_name: !!str name of this particular run # optional, randomly assigned using names_generator if not provided
+random_seed: !!int seed for rng # optional, defaults to 42
+
+# ============================================================================
+# TRAINER PARAMETERS (lightning.Trainer)
+# ============================================================================
+# These parameters configure PyTorch Lightning's Trainer class which handles
+# the training loop, validation, distributed training, and hardware optimization.
+# Reference: https://lightning.ai/docs/pytorch/stable/common/trainer.html
+#
+# ---- ORIGINAL BRIEF DOCUMENTATION (for reference) ----
+# trainer_kwargs:
+#   ckpt_path: !!str path of the checkpoint to resume training from
+#     # defaults to None -> start training from scratch -> epoch=0, step=0
+#   max_epochs: !!int total number of epochs to run training for
+#     # required. if training resumes from epoch=N, run for (:max_epochs-N) more epochs
+#   strategy: !!str distributed/parallel training strategy
+#     # defaults to None -> single GPU training. use 'ddp' or 'fsdp' for data/model parallelism
+#   devices: !!int number of accelerators to use
+#     # defaults to 1, use to configure :strategy for multi-device training
+#   precision: !!str quantization strategy
+#     # use to configure training models at lower precision than f32 -> faster inference and less memory
+#   use_distributed_sampler: !!bool True if using a distributed strategy
+#   num_sanity_val_steps: 0
+# ---- END ORIGINAL DOCUMENTATION ----
+
+trainer_kwargs:
+
+  # ╔════════════════════════════════════════════════════════════════════════╗
+  # ║  QUICK REFERENCE - Most Common Parameters                              ║
+  # ╚════════════════════════════════════════════════════════════════════════╝
+  #
+  # Training Duration:
+  #   max_epochs: 100              # Number of training epochs
+  #   max_steps: -1                # Or use steps instead (-1 = use epochs)
+  #
+  # Hardware (Single GPU - most common):
+  #   accelerator: "gpu"           # or "auto" for automatic selection
+  #   devices: 1                   # Number of GPUs
+  #   precision: "16-mixed"        # Use mixed precision for 2x speedup
+  #
+  # Hardware (Multi-GPU):
+  #   accelerator: "gpu"
+  #   devices: 4                   # or "auto" for all GPUs
+  #   strategy: "ddp"              # Data parallel training
+  #   precision: "bf16-mixed"      # BF16 for A100+ GPUs
+  #
+  # Gradient Optimization:
+  #   accumulate_grad_batches: 1   # Increase for larger effective batch
+  #   gradient_clip_val: 1.0       # Clip gradients (for transformers/RNNs)
+  #
+  # Validation & Debugging:
+  #   num_sanity_val_steps: 2      # Quick validation before training
+  #   check_val_every_n_epoch: 1   # Validate every N epochs
+  #   fast_dev_run: False          # Set to True/5 for quick testing
+  #
+  # Performance:
+  #   benchmark: True              # Enable for CNNs with fixed input size
+  #   deterministic: False         # Set True for reproducibility (slower)
+  #
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  # ╔════════════════════════════════════════════════════════════════════════╗
+  # ║  DETAILED PARAMETER DOCUMENTATION                                      ║
+  # ╚════════════════════════════════════════════════════════════════════════╝
+  # The sections below provide comprehensive documentation for all trainer
+  # parameters, including types, defaults, use cases, caveats, and examples.
+
+  # ---- Checkpoint & Resume ----
+  ckpt_path: !!str # path to checkpoint file for resuming training
+    # Type: Optional[str] (file path)
+    # Default: None (start from scratch)
+    # Behavior: Restores model weights, optimizer state, epoch, and step counters
+    # Example: "outputs/project/run/checkpoints/epoch=10-step=5000.ckpt"
+    # Caveat: Path must exist and be compatible with current model architecture
+
+  # ---- Training Duration ----
+  max_epochs: !!int # maximum number of training epochs
+    # Type: Optional[int]
+    # Default: 1000 (if neither max_epochs nor max_steps specified)
+    # Behavior: Training stops when this epoch count is reached
+    # Example: 100 (common for computer vision), 10 (common for fine-tuning)
+    # Use case: When you want to control training by dataset passes
+    # Caveat: If resuming from epoch N, runs (max_epochs - N) more epochs
+    # Modern practice: Use early stopping callbacks instead of fixed epochs
+
+  max_steps: !!int # maximum number of optimizer steps
+    # Type: int
+    # Default: -1 (disabled, use max_epochs instead)
+    # Behavior: Training stops at this step count; overrides max_epochs if reached first
+    # Example: 10000 (for iteration-based training like in transformers)
+    # Use case: When dataset size varies or you want precise step control
+    # Modern practice: Preferred for large-scale transformer training (e.g., GPT, BERT)
+
+  min_epochs: !!int # minimum number of epochs before allowing early stopping
+    # Type: Optional[int]
+    # Default: None
+    # Example: 5 (ensure model trains at least 5 epochs)
+    # Use case: Prevent premature stopping when combined with early stopping callbacks
+
+  # ---- Hardware & Distributed Training ----
+  accelerator: !!str # hardware accelerator type
+    # Type: str or Accelerator object
+    # Options: "cpu", "gpu", "tpu", "hpu", "mps", "auto"
+    # Default: "auto" (automatically selects available hardware)
+    # Example: "gpu" (explicitly use GPU), "cpu" (for debugging)
+    # Modern practice: Use "auto" for portability across machines
+
+  devices: !!int # number of devices to use
+    # Type: int, list[int], or str
+    # Default: 1
+    # Options:
+    #   - Positive int: number of devices (e.g., 4 for 4 GPUs)
+    #   - List[int]: specific device IDs (e.g., [0, 2, 3] for GPUs 0, 2, 3)
+    #   - "-1" or "auto": all available devices
+    # Example: devices=4 with strategy="ddp" for 4-GPU data-parallel training
+    # Caveat: Effective batch size = batch_size * devices in DDP
+    # Modern practice: Use "auto" or -1 to utilize all available GPUs
+
+  strategy: !!str # distributed/parallel training strategy
+    # Type: str or Strategy object
+    # Default: "auto" (single device if devices=1, else ddp)
+    # Options:
+    #   - None or "auto": automatic selection
+    #   - "ddp": DistributedDataParallel - data parallelism, model replicated on each GPU
+    #   - "fsdp": FullyShardedDataParallel - model sharded across GPUs (for huge models)
+    #   - "ddp_spawn": DDP with spawn (slower but more compatible)
+    #   - "deepspeed": DeepSpeed integration (advanced optimization)
+    # Example: "ddp" for standard multi-GPU training (ResNet, UNet)
+    # Example: "fsdp" for large transformers (LLMs that don't fit on single GPU)
+    # Use case DDP: Standard CV/NLP models, each GPU has full model copy
+    # Use case FSDP: Models > 10B parameters, memory-constrained training
+    # Caveat DDP: Requires batch_size ≥ num_gpus for efficient training
+    # Caveat FSDP: More communication overhead, best for very large models
+    # Modern practice: Use "ddp" for most cases, "fsdp" only for huge models
+
+  num_nodes: !!int # number of compute nodes for multi-node training
+    # Type: int
+    # Default: 1
+    # Example: 4 (for 4-node cluster with 8 GPUs each = 32 total GPUs)
+    # Use case: Large-scale distributed training across multiple machines
+    # Requires: Proper cluster setup with network configuration
+
+  precision: !!str # numerical precision for training
+    # Type: str or int
+    # Options:
+    #   - "32-true" or "32": Full 32-bit precision (FP32)
+    #   - "16-mixed": Mixed precision with FP16 (automatic loss scaling)
+    #   - "bf16-mixed": Mixed precision with BF16 (better range than FP16)
+    #   - "64-true" or "64": 64-bit precision (rarely needed)
+    #   - "transformer-engine": NVIDIA Transformer Engine (H100+ GPUs)
+    # Default: "32-true"
+    # Example: "16-mixed" for 2x speedup on V100/A100 GPUs
+    # Example: "bf16-mixed" for training stability without loss scaling (A100+)
+    # Use case FP16: Faster training, ~2x memory savings, works on V100+
+    # Use case BF16: More stable than FP16, no loss scaling needed, requires Ampere+ GPUs
+    # Caveat: Small models may not benefit much from mixed precision
+    # Caveat: Some operations automatically done in FP32 for stability
+    # Modern practice: Always use "16-mixed" or "bf16-mixed" on modern GPUs
+
+  # ---- Gradient Optimization ----
+  accumulate_grad_batches: !!int # number of batches to accumulate gradients
+    # Type: int or dict
+    # Default: 1 (no accumulation)
+    # Behavior: Accumulates gradients over K batches before optimizer step
+    # Effect: Effective batch size = batch_size * accumulate_grad_batches * num_gpus
+    # Example: 4 (simulate 4x larger batch without memory increase)
+    # Use case: Large effective batch size when GPU memory is limited
+    # Caveat: Batch statistics (BatchNorm) computed per mini-batch, not effective batch
+    # Modern practice: Use 2-8 for large models; trade-off between memory and speed
+
+  gradient_clip_val: !!float # gradient clipping threshold
+    # Type: Optional[float]
+    # Default: None (no clipping)
+    # Behavior: Clips gradient norm to this maximum value before optimizer step
+    # Example: 1.0 (clip gradients with norm > 1.0)
+    # Example: 0.5 (more aggressive clipping for RNNs/Transformers)
+    # Use case: Prevent exploding gradients in RNNs, Transformers, deep networks
+    # Caveat: Too aggressive clipping can slow convergence
+    # Modern practice: Use 1.0 for transformers, 5.0-10.0 for CNNs if needed
+
+  gradient_clip_algorithm: !!str # algorithm for gradient clipping
+    # Type: str
+    # Options: "norm" (clip by norm), "value" (clip by value)
+    # Default: "norm"
+    # Modern practice: Always use "norm" (more principled than value clipping)
+
+  # ---- Validation & Debugging ----
+  num_sanity_val_steps: !!int # validation batches to run before training starts
+    # Type: int
+    # Default: 2
+    # Behavior: Runs N validation batches before epoch 0 to catch bugs early
+    # Options:
+    #   - 0: Skip sanity check (faster startup)
+    #   - 2: Default, quick validation check
+    #   - -1: Run entire validation set (thorough check)
+    # Use case: Detect validation bugs without waiting for full epoch
+    # Modern practice: Keep default (2) or use 0 for fast iteration during debugging
+
+  check_val_every_n_epoch: !!int # run validation every N epochs
+    # Type: Optional[int]
+    # Default: 1 (validate after every epoch)
+    # Example: 5 (validate every 5 epochs for faster training)
+    # Use case: Speed up training when validation is expensive
+    # Caveat: Less frequent validation means less monitoring
+
+  val_check_interval: # validation check interval
+    # Type: Union[int, float]
+    # Options:
+    #   - float (0.0-1.0): fraction of training epoch (e.g., 0.25 = 4 validations per epoch)
+    #   - int: number of training batches between validations (e.g., 100)
+    # Default: 1.0 (once per epoch)
+    # Example: 0.5 (validate at middle and end of each epoch)
+    # Use case: Monitor training more frequently for unstable models
+
+  limit_train_batches: # limit training batches per epoch
+    # Type: Union[int, float]
+    # Options:
+    #   - float (0.0-1.0): fraction of training data (e.g., 0.1 = 10%)
+    #   - int: exact number of batches
+    # Default: 1.0 (use all training data)
+    # Example: 10 (only process 10 batches for quick debugging)
+    # Use case: Fast debugging, overfitting tests, dataset exploration
+
+  limit_val_batches: # limit validation batches
+    # Type: Union[int, float]
+    # Default: 1.0
+    # Example: 0.5 (use 50% of validation set for faster validation)
+
+  limit_test_batches: # limit test batches
+    # Type: Union[int, float]
+    # Default: 1.0
+
+  fast_dev_run: # quick run for debugging
+    # Type: Union[int, bool]
+    # Default: False
+    # Options:
+    #   - True: Run 1 train, val, test batch
+    #   - int: Run N batches of train, val, test
+    # Effect: Disables checkpointing, logging, callbacks
+    # Use case: Quickly verify code runs end-to-end before full training
+    # Modern practice: Use for initial testing, then disable
+
+  # ---- Optimization & Performance ----
+  benchmark: !!bool # cudnn auto-tuner optimization
+    # Type: Optional[bool]
+    # Default: None
+    # Behavior: torch.backends.cudnn.benchmark = True
+    # Effect: Auto-tunes cudnn kernels for best performance with fixed input sizes
+    # Trade-off: Faster training if input shape constant; slower if shape varies
+    # Use case: Enable for fixed-size inputs (images, audio); disable for variable lengths (text)
+    # Caveat: Adds startup time as cudnn benchmarks different algorithms
+    # Modern practice: Enable for CNNs with fixed input, disable for NLP/variable inputs
+
+  deterministic: # enforce reproducibility
+    # Type: Union[bool, Literal["warn"]]
+    # Default: False
+    # Options:
+    #   - True: Force deterministic operations (reproducible but slower)
+    #   - False: Allow non-deterministic ops (faster but not reproducible)
+    #   - "warn": Prefer deterministic, warn on non-deterministic ops
+    # Effect: Sets torch.use_deterministic_algorithms(True)
+    # Trade-off: Reproducibility vs speed (can be 10-30% slower)
+    # Use case: Academic papers, debugging, A/B testing
+    # Caveat: Some operations have no deterministic implementation
+    # Modern practice: Use True for reproducibility, False for production speed
+
+  sync_batchnorm: !!bool # synchronize batch normalization across GPUs
+    # Type: bool
+    # Default: False
+    # Behavior: Converts all BatchNorm layers to SyncBatchNorm
+    # Effect: Computes batch statistics across all GPUs, not per-GPU
+    # Use case: Small batch size per GPU where batch statistics are noisy
+    # Trade-off: More accurate statistics vs communication overhead
+    # Caveat: Only beneficial if batch_size_per_gpu < 16-32
+    # Modern practice: Enable when batch_size_per_gpu < 8, else keep False
+
+  # ---- Logging ----
+  log_every_n_steps: !!int # logging frequency
+    # Type: int
+    # Default: 50
+    # Behavior: Log metrics every N training steps
+    # Example: 10 (more frequent logging), 100 (less frequent)
+    # Trade-off: More logging = better monitoring but larger log files
+
+  # ---- Dataloader ----
+  use_distributed_sampler: !!bool # automatically use DistributedSampler
+    # Type: bool
+    # Default: True (when using distributed strategy)
+    # Behavior: Wraps dataloader sampler with DistributedSampler
+    # Effect: Each GPU processes different data subset (no overlap)
+    # Caveat: Set False if you implement custom distributed sampling
+    # Modern practice: Keep True (Lightning handles it automatically)
+
+  reload_dataloaders_every_n_epochs: !!int # reload dataloaders periodically
+    # Type: int
+    # Default: 0 (never reload)
+    # Example: 1 (reload every epoch for dynamic augmentation)
+    # Use case: Dynamic datasets that change between epochs
+
+  # ---- Inference Mode ----
+  inference_mode: !!bool # use torch.inference_mode during validation/test
+    # Type: bool
+    # Default: True
+    # Effect: torch.inference_mode() is faster than torch.no_grad()
+    # Caveat: Set False if you need gradients during validation (rare)
+    # Modern practice: Keep True for standard validation
+
+  # ---- Common Configuration Examples ----
+  #
+  # Example 1: Single GPU, Mixed Precision (most common)
+  # max_epochs: 100
+  # accelerator: "gpu"
+  # devices: 1
+  # precision: "16-mixed"
+  #
+  # Example 2: Multi-GPU DDP Training
+  # max_epochs: 100
+  # accelerator: "gpu"
+  # devices: 4  # or "auto" to use all GPUs
+  # strategy: "ddp"
+  # precision: "bf16-mixed"
+  # sync_batchnorm: True  # if batch_size_per_gpu < 8
+  #
+  # Example 3: Large Model with FSDP
+  # max_steps: 100000
+  # strategy: "fsdp"
+  # devices: 8
+  # precision: "bf16-mixed"
+  # accumulate_grad_batches: 4
+  #
+  # Example 4: Debugging Configuration
+  # fast_dev_run: 5  # run 5 batches
+  # limit_train_batches: 0.01  # use 1% of data
+  # num_sanity_val_steps: 0  # skip sanity check
+  #
+  # Example 5: Reproducible Training
+  # deterministic: True
+  # benchmark: False
+
+log_kwargs:
+  log_to_h5: False 
+  log_to_csv: False 
+  log_to_wandb: False 
+  wandb_init_kwargs:
+    tags: ["inria", "resnet50"]
+    notes: "testing building segmentation" 
+  log_every_n_steps: 10 
+  log_every_n_epochs: 1
+  log_models: True 
+
+dataset_name: inria.Inria_Building_Segmentation_HDF5
+dataset_kwargs:
+  df: null 
+  tabular_sampler_name: "stratified" 
+  tabular_sampler_kwargs:
+    val_frac: 0.15 
+    test_frac: 0.15
+    split_on: location 
+  spatial_sampler_name: null 
+  spatial_sampler_kwargs:
+    tile_size: 256 
+    tile_stride: 200 
+  spectral_sampler_name: null 
+  spectral_sampler_kwargs: null
+  batch_transform_name: null 
+  batch_transform_kwargs: 
+    alpha: 0.4
+  transforms: |
+    from torch import float32
+    from torchvision.transforms import v2 as T
+    image_pre = T.Compose([
+      T.ToImage(),
+      T.ToDtype(float32, scale = True),
+    ])
+    target_pre = T.Compose([
+      T.ToImage(),
+      T.ToDtype(float32, scale = False),
+    ])
+    train_aug = T.Compose([
+      T.RandomVerticalFlip(0.5),
+      T.RandomHorizontalFlip(0.5),
+    ])
+    eval_aug = T.Identity()
+  
+dataloader_kwargs:
+  # effective batch size = batch_size // gradient_accumulation
+  batch_size: 64 
+  gradient_accumulation: 1
+  num_workers: 16 
+  persistent_workers: False 
+  pin_memory: True 
+  prefetch_factor: 8 
+
+module:
+  name: ClassificationModule 
+  src: geovision.models.interfaces
+  kwargs:
+    ckpt_path: null
+
+    model_encoder:
+      name: ResNet_Encoder
+      src: geovision.models.resnet
+      kwargs:
+        layers: 50 
+        residual_block_name: bottleneck 
+        weights:
+          name: ResNet50_Weights.FMOW_RGB_GASSL
+          src: torchgeo # torchvision, torchgeo, timm, path, url
+          kwargs:
+        # weights_init: torchgeo 
+        # weights_param: ResNet50_Weights.FMOW_RGB_GASSL
+
+    model_decoder: 
+      name: UNet_Decoder
+      src: geovision.models.unet
+      kwargs:
+        upsampling: bilinear
+        central_block: ResidualBlock
+        central_block_kwargs:
+          residual_path: basic 
+          identity_path: identity 
+        conv_block: ResidualBlock
+        conv_block_kwargs:
+          residual_path: basic 
+          identity_path: identity
+    
+# used for validation
+# for segmentation: mIoU, Dice, Pixel Accuracy
+ # - name: name of the metric constructor / class
+  # - src: name of the module / library 
+  # - kwargs: dict of init kwargs for the class, defaults to none
+  # - key: name to display on chart / legend, defaults to name
+
+# confusion matrix is always tracked for classification
+
+metrics:
+  - name: JaccardIndex 
+    src: torchmetrics 
+    kwargs:
+      sync_on_compute: True
+    key: IoU 
+  
+# ============================================================================
+# LOSS FUNCTION (CRITERION) - torch.nn loss functions
+# ============================================================================
+# The loss function (criterion) measures how well the model predictions match
+# the target values. Different tasks require different loss functions.
+# Reference: https://pytorch.org/docs/stable/nn.html#loss-functions
+
+criterion_name: CrossEntropyLoss  # name of the loss function class
+  # Available from: torch.nn (automatically imported)
+  # Type: str (class name)
+
+  # ---- Common Loss Functions for Classification ----
+  #
+  # CrossEntropyLoss - Multi-class classification (mutually exclusive classes)
+  #   Use case: Image classification, semantic segmentation (per-pixel classification)
+  #   Input: Raw logits (no softmax), shape: (N, C, ...) where C = num_classes
+  #   Target: Class indices, shape: (N, ...) with values in [0, C-1]
+  #   Behavior: Internally applies log_softmax + negative log likelihood
+  #   Example: CIFAR-10, ImageNet classification, building segmentation
+  #   Modern practice: Most common for multi-class problems
+  #
+  # BCELoss - Binary classification with sigmoid probabilities
+  #   Use case: Binary classification when you apply sigmoid manually
+  #   Input: Probabilities in [0, 1], shape: (N, ...)
+  #   Target: Binary labels 0 or 1, shape: (N, ...)
+  #   Caveat: Requires manual sigmoid application; less stable than BCEWithLogitsLoss
+  #   Modern practice: Use BCEWithLogitsLoss instead (more numerically stable)
+  #
+  # BCEWithLogitsLoss - Binary classification (recommended)
+  #   Use case: Binary classification, multi-label classification
+  #   Input: Raw logits, shape: (N, ...) or (N, C) for multi-label
+  #   Target: Binary labels 0 or 1, same shape as input
+  #   Behavior: Combines sigmoid + BCE for numerical stability
+  #   Example: Single-class segmentation, multi-label image tagging
+  #   Modern practice: Always prefer over BCELoss for stability
+  #
+  # NLLLoss - Negative Log Likelihood (use with manual log_softmax)
+  #   Use case: When you want explicit control over softmax temperature
+  #   Input: Log probabilities (after log_softmax), shape: (N, C, ...)
+  #   Target: Class indices, shape: (N, ...)
+  #   Note: CrossEntropyLoss = log_softmax + NLLLoss
+  #
+  # FocalLoss - Addresses class imbalance (available in external libraries)
+  #   Use case: Imbalanced datasets (e.g., rare object detection)
+  #   Behavior: Down-weights easy examples, focuses on hard examples
+  #   Example: Medical imaging with rare disease, object detection
+  #   Note: Not in torch.nn; use torchvision.ops.sigmoid_focal_loss or external libs
+  #
+  # ---- Common Loss Functions for Regression ----
+  #
+  # MSELoss (Mean Squared Error, L2 Loss)
+  #   Use case: Regression tasks where large errors should be heavily penalized
+  #   Input: Predictions, shape: (N, ...)
+  #   Target: Ground truth values, same shape as input
+  #   Behavior: (prediction - target)^2, averaged over batch
+  #   Example: Temperature prediction, image super-resolution
+  #   Caveat: Very sensitive to outliers due to squaring
+  #   Modern practice: Good when errors are normally distributed
+  #
+  # L1Loss (Mean Absolute Error)
+  #   Use case: Regression robust to outliers
+  #   Behavior: |prediction - target|, averaged over batch
+  #   Example: Robust regression, less sensitive to noise
+  #   Trade-off: More robust but non-smooth at zero (can slow convergence)
+  #
+  # SmoothL1Loss (Huber Loss variant)
+  #   Use case: Regression combining L1 and L2 benefits
+  #   Behavior: L2 for small errors (|x| < 1), L1 for large errors
+  #   Example: Object detection bounding boxes (Faster R-CNN)
+  #   Modern practice: Good compromise for regression with occasional outliers
+  #
+  # HuberLoss - Configurable robust regression loss
+  #   Use case: Regression with customizable outlier threshold
+  #   Behavior: L2 for errors < delta, L1 for errors > delta
+  #   Example: Time series forecasting with outliers
+  #
+  # ---- Specialized Loss Functions ----
+  #
+  # KLDivLoss - Kullback-Leibler Divergence
+  #   Use case: Knowledge distillation, distribution matching
+  #   Example: Student-teacher models, VAEs
+  #
+  # CTCLoss - Connectionist Temporal Classification
+  #   Use case: Sequence tasks with alignment (speech, OCR)
+  #   Example: Speech recognition, handwriting recognition
+  #
+  # TripletMarginLoss - Metric learning
+  #   Use case: Face recognition, similarity learning
+  #   Behavior: Anchor-positive closer than anchor-negative
+  #
+  # CosineEmbeddingLoss - Similarity learning
+  #   Use case: Learning embeddings with cosine similarity
+
+criterion_kwargs:  # parameters to pass to the loss function constructor
+  # Type: dict
+  # These are passed as **kwargs to the criterion class
+
+  # ---- Common Parameters (shared across many losses) ----
+
+  reduction: mean  # how to aggregate the loss across batch
+    # Type: str
+    # Options: "mean", "sum", "none"
+    # Default: Usually "mean"
+    # Behavior:
+    #   - "mean": Average loss over all elements (most common)
+    #   - "sum": Sum of all losses (useful for custom normalization)
+    #   - "none": Return loss per element (for custom weighting)
+    # Example: "mean" for standard training
+    # Example: "none" + custom weighting for hard negative mining
+    # Modern practice: Use "mean" for standard training
+
+  # ---- CrossEntropyLoss Specific Parameters ----
+  #
+  # weight: Optional[Tensor] - per-class weights for imbalanced datasets
+  #   Type: Tensor of shape (C,) where C = num_classes
+  #   Default: None (equal weight for all classes)
+  #   Example: torch.tensor([0.2, 0.8]) for binary with 80% negative class
+  #   Use case: Address class imbalance (e.g., 95% background, 5% object)
+  #   Calculation: weight[i] = 1 / frequency[i] or inverse sqrt
+  #   Modern practice: Use with highly imbalanced datasets
+  #
+  # ignore_index: int - ignore specific class index (e.g., padding)
+  #   Type: int
+  #   Default: -100
+  #   Example: ignore_index=255 for unlabeled pixels in segmentation
+  #   Use case: Ignore padding, unlabeled, or "void" class
+  #   Behavior: Targets with this value don't contribute to loss
+  #
+  # label_smoothing: float - prevent overconfident predictions
+  #   Type: float in [0.0, 1.0]
+  #   Default: 0.0 (no smoothing)
+  #   Example: 0.1 (target becomes 0.9 for correct class, 0.1/(C-1) for others)
+  #   Use case: Regularization, prevents overfitting, improves calibration
+  #   Example: ImageNet training often uses 0.1
+  #   Modern practice: Use 0.1 for large-scale classification
+  #
+  # ---- BCEWithLogitsLoss Specific Parameters ----
+  #
+  # pos_weight: Optional[Tensor] - weight for positive class
+  #   Type: Tensor of shape (C,) for multi-label or (1,) for binary
+  #   Default: None
+  #   Example: pos_weight=torch.tensor([10.0]) if positive class is 10x rarer
+  #   Use case: Binary/multi-label imbalance
+  #   Calculation: pos_weight = num_negative / num_positive
+  #
+  # ---- Regression Loss Specific Parameters ----
+  #
+  # For SmoothL1Loss:
+  # beta: float - threshold for switching from L2 to L1
+  #   Type: float
+  #   Default: 1.0
+  #   Example: 0.5 for more aggressive outlier handling
+  #
+  # For HuberLoss:
+  # delta: float - threshold parameter
+  #   Type: float
+  #   Default: 1.0
+
+  # ---- Example Configurations ----
+  #
+  # Example 1: Balanced Multi-class Classification
+  # criterion_name: CrossEntropyLoss
+  # criterion_kwargs:
+  #   reduction: mean
+  #   label_smoothing: 0.1  # for regularization
+  #
+  # Example 2: Imbalanced Binary Segmentation (5% positive)
+  # criterion_name: BCEWithLogitsLoss
+  # criterion_kwargs:
+  #   reduction: mean
+  #   pos_weight: [19.0]  # 95/5 = 19
+  #
+  # Example 3: Multi-class with Ignore Index (segmentation)
+  # criterion_name: CrossEntropyLoss
+  # criterion_kwargs:
+  #   reduction: mean
+  #   ignore_index: 255  # unlabeled pixels
+  #   weight: [0.5, 1.0, 1.5]  # per-class weights
+  #
+  # Example 4: Robust Regression
+  # criterion_name: HuberLoss
+  # criterion_kwargs:
+  #   reduction: mean
+  #   delta: 1.0
+  #
+  # Example 5: Standard Regression
+  # criterion_name: MSELoss
+  # criterion_kwargs:
+  #   reduction: mean
+  #
+  # ---- Advanced: Custom/Combined Losses ----
+  # For complex tasks, you may need to combine multiple losses:
+  # - Segmentation: CrossEntropy + DiceLoss
+  # - Style transfer: ContentLoss + StyleLoss + TotalVariationLoss
+  # - Multi-task: Task1Loss + lambda * Task2Loss
+  # Note: Implement custom losses in your module's training_step()
+
+# ============================================================================
+# OPTIMIZER - torch.optim optimizers
+# ============================================================================
+# The optimizer updates model parameters based on computed gradients.
+# Different optimizers have different convergence properties and use cases.
+# Reference: https://pytorch.org/docs/stable/optim.html
+
+optimizer_name: SGD  # name of the optimizer class
+  # Available from: torch.optim
+  # Type: str (class name)
+
+  # ---- Common Optimizers Overview ----
+  #
+  # SGD (Stochastic Gradient Descent) - Classic optimizer
+  #   Use case: CNNs, computer vision, when training is stable
+  #   Pros: Simple, well-understood, good generalization
+  #   Cons: Requires careful LR tuning, slower convergence than adaptive methods
+  #   Best for: ResNets, VGG, image classification/segmentation
+  #   Modern practice: Still competitive for CNNs with proper LR schedule
+  #   Typical LR: 0.1 (with decay), 0.01-0.001 (for fine-tuning)
+  #
+  # Adam (Adaptive Moment Estimation) - Popular adaptive optimizer
+  #   Use case: General-purpose, transformers, quick prototyping
+  #   Pros: Fast convergence, less sensitive to LR, minimal tuning
+  #   Cons: May generalize worse than SGD, higher memory usage
+  #   Best for: Transformers, GANs, quick experiments, unstable training
+  #   Modern practice: Default choice for most deep learning
+  #   Typical LR: 1e-3 to 1e-4, 3e-4 (common for transformers)
+  #
+  # AdamW - Adam with decoupled weight decay (recommended over Adam)
+  #   Use case: Same as Adam but with proper regularization
+  #   Pros: All Adam benefits + correct weight decay implementation
+  #   Cons: Same as Adam
+  #   Best for: Transformers (BERT, GPT), most modern architectures
+  #   Modern practice: Preferred over Adam in most cases
+  #   Typical LR: 1e-3 to 5e-5, often 3e-4 for transformers
+  #   Note: Standard choice for transformer training
+  #
+  # RMSprop - Root Mean Square Propagation
+  #   Use case: RNNs, non-stationary problems
+  #   Pros: Good for recurrent networks, handles non-stationarity
+  #   Cons: Less popular than Adam
+  #   Best for: RNNs, LSTMs, GRUs
+  #   Typical LR: 1e-3 to 1e-4
+  #
+  # Adagrad - Adaptive Gradient
+  #   Use case: Sparse data, NLP with rare features
+  #   Pros: Good for sparse gradients
+  #   Cons: Learning rate decays too aggressively
+  #   Best for: Sparse data problems
+  #   Modern practice: Rarely used (Adam/AdamW preferred)
+  #
+  # AdamMax - Variant of Adam based on infinity norm
+  #   Use case: Alternative to Adam for specific problems
+  #
+  # NAdam - Adam + Nesterov momentum
+  #   Use case: When you want both adaptive learning and Nesterov acceleration
+  #
+  # RAdam - Rectified Adam (warmup built-in)
+  #   Use case: When you want Adam without manual warmup
+  #   Note: Available in torch.optim or external packages
+  #
+  # Lion - Recent optimizer (2023) - efficient alternative to Adam
+  #   Use case: Memory-efficient training of large models
+  #   Note: Available in external packages
+  #   Modern practice: Promising for large-scale training
+  #
+  # ---- Architecture-Specific Recommendations ----
+  #
+  # CNNs (ResNet, VGG, EfficientNet):
+  #   Primary: SGD with momentum=0.9, lr=0.1, weight_decay=1e-4
+  #   Alternative: AdamW with lr=1e-3
+  #   Schedule: Cosine annealing or step decay
+  #
+  # Transformers (BERT, GPT, ViT):
+  #   Primary: AdamW with lr=3e-4 to 5e-5, betas=(0.9, 0.999)
+  #   Weight decay: 0.01 to 0.1
+  #   Schedule: Linear warmup + cosine/linear decay
+  #
+  # GANs:
+  #   Generator/Discriminator: Adam with lr=2e-4, betas=(0.5, 0.999)
+  #   Alternative: RMSprop
+  #
+  # RNNs/LSTMs:
+  #   Primary: Adam or RMSprop with lr=1e-3
+  #   Important: Use gradient clipping
+
+optimizer_kwargs:  # parameters for the optimizer constructor
+  # Type: dict
+  # These are passed as **kwargs to the optimizer class
+
+  # ---- Universal Parameters (all optimizers) ----
+
+  lr: 5.0e-6  # learning rate (most important hyperparameter)
+    # Type: float
+    # Range: Typically 1e-5 to 1e-1
+    # Behavior: Step size for parameter updates
+    # Too high: Training diverges, loss becomes NaN
+    # Too low: Slow convergence, may get stuck in local minima
+    #
+    # Typical values by optimizer:
+    #   SGD: 0.1 (standard), 0.01 (conservative), 0.001 (fine-tuning)
+    #   Adam/AdamW: 1e-3 (default), 3e-4 (common), 1e-4 to 5e-5 (fine-tuning)
+    #   RMSprop: 1e-3 to 1e-4
+    #
+    # How to choose:
+    #   1. Start with default for your optimizer
+    #   2. Use LR finder (increases LR to find optimal range)
+    #   3. Use learning rate warmup for stability
+    #   4. Lower LR for fine-tuning pre-trained models (1e-5 to 1e-4)
+    #   5. Scale with batch size: LR_new = LR_base * (BatchSize_new / BatchSize_base)
+    #
+    # Modern practice:
+    #   - Use LR schedulers (cosine, linear) instead of fixed LR
+    #   - Start with warmup (LinearLR) for first few hundred steps
+    #   - Scale LR linearly with batch size for distributed training
+
+  # ---- SGD Specific Parameters ----
+
+  momentum: 0.9  # momentum factor (for SGD)
+    # Type: float in [0, 1]
+    # Default: 0 (no momentum)
+    # Behavior: Accumulates gradient history to accelerate convergence
+    # Effect: Helps escape local minima, smooths updates, faster convergence
+    # Typical values: 0.9 (standard), 0.95 (aggressive), 0.99 (very aggressive)
+    # Modern practice: Always use 0.9 for SGD in deep learning
+    # Formula: velocity = momentum * velocity + gradient
+    #          parameters -= lr * velocity
+    #
+    # Variants:
+    #   - Nesterov momentum: nesterov=True (look-ahead gradient)
+    #   - Use Nesterov for slightly better convergence
+
+  nesterov: !!bool  # use Nesterov momentum (for SGD)
+    # Type: bool
+    # Default: False
+    # Requires: momentum > 0
+    # Behavior: Computes gradient at predicted future position
+    # Effect: Often converges slightly faster than standard momentum
+    # Modern practice: Set True when using momentum with SGD
+
+  dampening: !!float  # dampening for momentum (for SGD)
+    # Type: float
+    # Default: 0
+    # Use case: Rarely modified; keep at 0 for standard momentum
+
+  weight_decay: 5.0e-4  # L2 regularization coefficient
+    # Type: float
+    # Default: 0 (no regularization)
+    # Range: Typically 1e-5 to 1e-1
+    # Behavior: Adds penalty on parameter magnitude to loss
+    # Effect: L2 = loss + (weight_decay / 2) * ||parameters||^2
+    #         Prevents overfitting, encourages smaller weights
+    #
+    # Typical values:
+    #   CNNs (ResNet, VGG): 1e-4 to 5e-4
+    #   Transformers: 0.01 to 0.1 (with AdamW)
+    #   Small datasets: 1e-3 to 1e-2 (more regularization)
+    #   Large datasets: 1e-5 to 1e-4 (less regularization)
+    #
+    # Important caveat:
+    #   - For Adam: weight_decay is coupled with learning rate (not true L2)
+    #   - For AdamW: weight_decay is decoupled (correct implementation)
+    #   - Use AdamW instead of Adam when weight decay is important
+    #
+    # How to choose:
+    #   1. Start with 1e-4 for CNNs, 0.01 for transformers
+    #   2. Increase if overfitting (val loss >> train loss)
+    #   3. Decrease if underfitting (both losses high)
+    #
+    # Modern practice:
+    #   - Always use some weight decay (at least 1e-5)
+    #   - Tune on validation set (important hyperparameter)
+
+  # ---- Adam / AdamW Specific Parameters ----
+
+  betas: !!seq  # coefficients for computing running averages (Adam, AdamW)
+    # Type: Tuple[float, float]
+    # Default: (0.9, 0.999)
+    # Notation: (beta1, beta2)
+    # Behavior:
+    #   beta1: Decay rate for first moment (mean of gradients)
+    #   beta2: Decay rate for second moment (variance of gradients)
+    # Formula:
+    #   m = beta1 * m + (1 - beta1) * gradient  # first moment
+    #   v = beta2 * v + (1 - beta2) * gradient^2  # second moment
+    #
+    # Typical values:
+    #   Default: (0.9, 0.999) - works for most cases
+    #   GANs: (0.5, 0.999) - less smoothing for faster adaptation
+    #   Sparse gradients: (0.9, 0.999) - standard
+    #   Transformers: (0.9, 0.98) or (0.9, 0.999)
+    #
+    # How to choose:
+    #   - Lower beta1 (e.g., 0.5): Faster adaptation, more noise
+    #   - Higher beta1 (e.g., 0.95): More smoothing, more stable
+    #   - Beta2: Rarely changed from 0.999
+    #
+    # Modern practice: Keep default (0.9, 0.999) unless specific reason
+
+  eps: !!float  # epsilon for numerical stability (Adam, AdamW, RMSprop)
+    # Type: float
+    # Default: 1e-8
+    # Behavior: Small constant added to denominator to prevent division by zero
+    # Formula: param_update = lr * m / (sqrt(v) + eps)
+    # Typical values: 1e-8 (default), 1e-6 (if numerical issues)
+    # Modern practice: Keep default unless encountering NaN
+
+  amsgrad: !!bool  # use AMSGrad variant (Adam, AdamW)
+    # Type: bool
+    # Default: False
+    # Behavior: Maintains max of past second moments (more conservative updates)
+    # Use case: When Adam fails to converge (rare)
+    # Modern practice: Keep False (standard Adam is usually better)
+
+  # ---- RMSprop Specific Parameters ----
+
+  alpha: !!float  # smoothing constant (RMSprop)
+    # Type: float
+    # Default: 0.99
+    # Behavior: Decay rate for moving average of squared gradients
+    # Similar to beta2 in Adam
+
+  centered: !!bool  # centered RMSprop (RMSprop)
+    # Type: bool
+    # Default: False
+    # Behavior: Normalize by centered second moment
+
+  # ---- Learning Rate Scheduling Integration ----
+  # Note: The learning rate here is the initial/base LR.
+  # Schedulers (defined below) will modify this LR during training.
+  # Examples:
+  #   - LinearLR: Gradually increases/decreases from start_factor * base_lr
+  #   - CosineAnnealingLR: Smoothly varies LR following cosine curve
+  #   - ReduceLROnPlateau: Reduces LR when validation metric plateaus
+
+  # ---- Example Configurations ----
+  #
+  # Example 1: Standard CNN Training (ImageNet-style)
+  # optimizer_name: SGD
+  # optimizer_kwargs:
+  #   lr: 0.1  # will be decayed by scheduler
+  #   momentum: 0.9
+  #   weight_decay: 1e-4
+  #   nesterov: True
+  #
+  # Example 2: Transfer Learning / Fine-tuning
+  # optimizer_name: SGD
+  # optimizer_kwargs:
+  #   lr: 1e-3  # lower LR for fine-tuning
+  #   momentum: 0.9
+  #   weight_decay: 5e-4
+  #
+  # Example 3: Transformer Training (BERT-style)
+  # optimizer_name: AdamW
+  # optimizer_kwargs:
+  #   lr: 3e-4
+  #   betas: [0.9, 0.999]
+  #   weight_decay: 0.01
+  #   eps: 1e-8
+  #
+  # Example 4: Fast Prototyping
+  # optimizer_name: Adam
+  # optimizer_kwargs:
+  #   lr: 1e-3
+  #   weight_decay: 1e-5
+  #
+  # Example 5: GAN Training
+  # optimizer_name: Adam
+  # optimizer_kwargs:
+  #   lr: 2e-4
+  #   betas: [0.5, 0.999]  # lower beta1 for GANs
+  #
+  # Example 6: RNN/LSTM
+  # optimizer_name: Adam
+  # optimizer_kwargs:
+  #   lr: 1e-3
+  #   weight_decay: 1e-5
+  # (Remember to use gradient clipping: trainer_kwargs.gradient_clip_val: 1.0)
+  #
+  # ---- Advanced Tips ----
+  #
+  # 1. Layer-wise Learning Rates (different LR for different layers)
+  #    Implement in your LightningModule:
+  #    def configure_optimizers(self):
+  #      return torch.optim.Adam([
+  #        {'kwargs': self.encoder.parameters(), 'lr': 1e-5},
+  #        {'kwargs': self.decoder.parameters(), 'lr': 1e-3}
+  #      ])
+  #
+  # 2. Large Batch Training
+  #    Scale LR linearly: lr_new = lr_base * (batch_size_new / batch_size_base)
+  #    Example: batch=256 lr=0.1 → batch=1024 lr=0.4
+  #    Use warmup to stabilize training
+  #
+  # 3. Mixed Precision Training
+  #    May need to adjust LR (usually no change needed)
+  #    Loss scaling handled automatically by Lightning
+
+# ============================================================================
+# LEARNING RATE SCHEDULERS - torch.optim.lr_scheduler
+# ============================================================================
+# Learning rate schedulers adjust the learning rate during training to improve
+# convergence and final performance. Modern practice often uses warmup followed
+# by decay (cosine, linear, or step-based).
+# Reference: https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+
+# ---- WARMUP SCHEDULER (Optional but Recommended) ----
+# Warmup gradually increases LR from a small value to the base LR over initial
+# training steps. This stabilizes training, especially with large batch sizes,
+# adaptive optimizers (Adam/AdamW), or transformer architectures.
+
+warmup_scheduler_name: LinearLR  # scheduler for warmup phase
+  # Available from: torch.optim.lr_scheduler
+  # Type: str (class name)
+  # Common choice: LinearLR (gradual linear increase)
+  # Alternative: ConstantLR (constant warmup, then jump to base LR)
+  #
+  # Why use warmup:
+  #   1. Prevents early training instability (large gradients at start)
+  #   2. Essential for transformer training (BERT, GPT use 10k-40k warmup steps)
+  #   3. Recommended for large batch training (batch_size > 256)
+  #   4. Helps Adam/AdamW converge better (improves final performance)
+  #
+  # When to skip warmup:
+  #   - Small models with stable training
+  #   - Small batch sizes (< 64)
+  #   - Transfer learning with low LR
+  #
+  # Modern practice: Almost always use warmup (minimal downside, significant benefit)
+
+warmup_scheduler_kwargs:  # parameters for warmup scheduler
+  start_factor: 0.001  # initial LR multiplier
+    # Type: float in (0, 1.0]
+    # Behavior: LR starts at (start_factor * base_lr)
+    # Example: base_lr=1e-3, start_factor=0.001 → start at LR=1e-6
+    # Typical values:
+    #   0.001: Conservative warmup (1000x smaller than base LR)
+    #   0.01: Moderate warmup (100x smaller)
+    #   0.1: Gentle warmup (10x smaller)
+    # Modern practice: 0.001 to 0.01 for transformers, 0.1 for CNNs
+
+  end_factor: 0.9  # final LR multiplier at end of warmup
+    # Type: float
+    # Default: 1.0 (reach full base LR)
+    # Behavior: LR reaches (end_factor * base_lr) at end of warmup
+    # Example: 0.9 means warmup to 90% of base LR, then main scheduler takes over
+    # Modern practice: Usually set to 1.0 (full base LR)
+    # Note: Use < 1.0 only if main scheduler starts from lower value
+
+  total_iters: 200  # number of warmup steps/epochs
+    # Type: int
+    # Behavior: Duration of warmup phase
+    # Units: Depends on scheduler_config_kwargs.interval
+    #   - If interval="step": number of optimizer steps
+    #   - If interval="epoch": number of epochs
+    #
+    # Typical values:
+    #   Steps (interval="step"):
+    #     - Small models/datasets: 500-1000 steps
+    #     - Medium models: 2000-5000 steps
+    #     - Transformers: 10000-40000 steps (BERT uses 10k)
+    #     - Rule of thumb: ~2-5% of total training steps
+    #   Epochs (interval="epoch"):
+    #     - 1-5 epochs for most cases
+    #     - Rarely used (step-based warmup is more common)
+    #
+    # How to calculate:
+    #   total_steps = (num_samples / batch_size) * max_epochs
+    #   warmup_steps = total_steps * 0.03  # 3% of training
+    #
+    # Example: 50k samples, batch=64, 100 epochs
+    #   total_steps = (50000/64) * 100 = 78,125
+    #   warmup_steps = 78125 * 0.03 = 2344
+    #
+    # Modern practice: Use step-based warmup (not epoch-based)
+
+warmup_steps: 200  # number of warmup steps (for logging/reference)
+  # Type: int
+  # Note: This is typically the same as warmup_scheduler_kwargs.total_iters
+  # Used by Lightning to know when warmup ends
+  # Modern practice: Set equal to total_iters
+
+# ---- MAIN SCHEDULER (After Warmup) ----
+# The main scheduler adjusts LR after warmup. Common strategies: cosine decay,
+# linear decay, step decay, or plateau-based reduction.
+
+scheduler_name: LinearLR  # main learning rate scheduler
+  # Available from: torch.optim.lr_scheduler
+  # Type: str (class name)
+
+  # ---- Common LR Schedulers ----
+  #
+  # LinearLR - Linear decay/increase
+  #   Use case: Simple linear LR reduction
+  #   Behavior: LR = base_lr * (start_factor + (end_factor - start_factor) * progress)
+  #   Example: Gradually reduce from base LR to 0.1 * base LR
+  #   Modern practice: Common for fine-tuning and simple tasks
+  #
+  # CosineAnnealingLR - Smooth cosine decay
+  #   Use case: Most modern deep learning (CNNs, transformers)
+  #   Behavior: LR follows cosine curve from max to min
+  #   Pros: Smooth decay, proven to work well empirically
+  #   Formula: LR = eta_min + (base_lr - eta_min) * (1 + cos(pi * t / T)) / 2
+  #   Parameters:
+  #     - T_max: Total training iterations/epochs
+  #     - eta_min: Minimum LR (usually 0 or 1e-6)
+  #   Example: T_max=90 epochs, eta_min=1e-6
+  #   Modern practice: Most popular choice, "SGDR" paper recommendation
+  #   Best for: Image classification, segmentation, most computer vision
+  #
+  # CosineAnnealingWarmRestarts - Cosine with periodic restarts
+  #   Use case: Long training runs, avoiding local minima
+  #   Behavior: Cosine annealing with LR resets (jumps back to high LR)
+  #   Parameters:
+  #     - T_0: Iterations until first restart
+  #     - T_mult: Factor to increase period after each restart
+  #   Example: T_0=10, T_mult=2 → restarts at epochs 10, 30, 70, ...
+  #   Modern practice: Good for very long training (500+ epochs)
+  #
+  # StepLR - Step-wise decay at fixed intervals
+  #   Use case: Traditional CV training (AlexNet, VGG era)
+  #   Behavior: Multiply LR by gamma every step_size epochs
+  #   Parameters:
+  #     - step_size: Epochs between LR reductions
+  #     - gamma: Multiplicative factor (usually 0.1)
+  #   Example: step_size=30, gamma=0.1 → LR drops 10x every 30 epochs
+  #   Modern practice: Less common (cosine is preferred)
+  #   Best for: Reproducing older papers, simple baselines
+  #
+  # MultiStepLR - Step decay at specific milestones
+  #   Use case: CV training with predefined decay schedule
+  #   Behavior: Multiply LR by gamma at specific epochs
+  #   Parameters:
+  #     - milestones: List of epochs to decay (e.g., [30, 60, 80])
+  #     - gamma: Multiplicative factor (usually 0.1)
+  #   Example: milestones=[30, 60, 90], gamma=0.1
+  #   Modern practice: Common in ResNet/ImageNet papers
+  #   Best for: Reproducing published results, CNNs
+  #
+  # ExponentialLR - Exponential decay
+  #   Use case: Continuous smooth decay
+  #   Behavior: LR = base_lr * gamma^epoch
+  #   Parameters:
+  #     - gamma: Decay rate (e.g., 0.95)
+  #   Example: gamma=0.95 → 5% decay each epoch
+  #   Modern practice: Less common (linear/cosine preferred)
+  #
+  # ReduceLROnPlateau - Adaptive reduction based on metrics
+  #   Use case: When you don't know optimal LR schedule in advance
+  #   Behavior: Reduces LR when validation metric stops improving
+  #   Parameters:
+  #     - mode: "min" (loss) or "max" (accuracy)
+  #     - factor: Reduction factor (usually 0.1 or 0.5)
+  #     - patience: Epochs to wait before reducing (usually 5-10)
+  #     - threshold: Minimum improvement to count as progress
+  #   Example: mode="min", factor=0.1, patience=10
+  #   Use case: Exploratory training, unpredictable convergence
+  #   Caveat: Can be sensitive to noisy validation metrics
+  #   Modern practice: Useful but less predictable than cosine
+  #
+  # OneCycleLR - Super-convergence (high LR peak, then decay)
+  #   Use case: Fast convergence with specific setup
+  #   Behavior: LR increases to max, then decreases (one cycle)
+  #   Parameters:
+  #     - max_lr: Peak learning rate
+  #     - total_steps: Total training steps
+  #     - pct_start: Fraction of cycle for LR increase
+  #   Example: max_lr=0.1, pct_start=0.3 (30% increase, 70% decrease)
+  #   Modern practice: Can achieve faster convergence but requires tuning
+  #   Best for: When you want to minimize training time
+  #
+  # PolynomialLR - Polynomial decay
+  #   Use case: Smooth decay with configurable curve
+  #   Parameters:
+  #     - total_iters: Total iterations
+  #     - power: Polynomial degree (higher = slower initial decay)
+  #   Modern practice: Less common than cosine/linear
+  #
+  # ---- Scheduler Selection Guide ----
+  #
+  # For CNNs (ResNet, EfficientNet, UNet):
+  #   Primary: CosineAnnealingLR (T_max=max_epochs, eta_min=1e-6)
+  #   Alternative: MultiStepLR (milestones=[30, 60, 80], gamma=0.1)
+  #   Warmup: Yes, 5-10 epochs or 1000-5000 steps
+  #
+  # For Transformers (BERT, GPT, ViT):
+  #   Primary: LinearLR (decay to 0) or CosineAnnealingLR
+  #   Warmup: Essential! 10% of total steps (e.g., 10k steps)
+  #   Example (BERT): 10k warmup steps, linear decay to 0
+  #
+  # For Transfer Learning / Fine-tuning:
+  #   Primary: ReduceLROnPlateau (patient, adaptive)
+  #   Alternative: CosineAnnealingLR (short schedule, low LR)
+  #   Warmup: Optional (small warmup or none)
+  #
+  # For GANs:
+  #   Primary: ConstantLR (no scheduling) or slow LinearLR decay
+  #   Alternative: ExponentialLR (gamma=0.99, very slow decay)
+  #   Warmup: Usually not needed
+  #
+  # For Quick Experiments:
+  #   Primary: ReduceLROnPlateau (adapts automatically)
+  #   Warmup: Short or none
+
+scheduler_kwargs:  # parameters for main scheduler
+  # Type: dict
+  # These are passed to the scheduler constructor
+
+  # ---- LinearLR Parameters ----
+  start_factor: 1.0  # initial LR multiplier (after warmup)
+    # Type: float
+    # Behavior: LR starts at (start_factor * base_lr)
+    # For decay: set start_factor=1.0, end_factor=0.0 to decay to 0
+    # For increase: set start_factor < end_factor (rare)
+
+  end_factor: 0.001  # final LR multiplier
+    # Type: float
+    # Example: 0.001 means LR decays to 0.1% of base LR
+    # Modern practice: 0.0 (decay to zero) or 0.01 (decay to 1%)
+
+  total_iters: 5  # number of iterations for this scheduler
+    # Type: int
+    # Units: Depends on scheduler_config_kwargs.interval
+    # For linear decay over full training:
+    #   If interval="epoch": set to (max_epochs - warmup_epochs)
+    #   If interval="step": set to (total_steps - warmup_steps)
+
+  # ---- CosineAnnealingLR Parameters ----
+  # (uncomment if using CosineAnnealingLR)
+  #
+  # T_max: !!int  # period of cosine cycle
+  #   Type: int
+  #   Behavior: Number of iterations for half-cosine (high LR to low LR)
+  #   Example: T_max=90 for 90 epochs, T_max=100000 for 100k steps
+  #   Modern practice: Set to (max_epochs - warmup_epochs) or (total_steps - warmup_steps)
+  #
+  # eta_min: !!float  # minimum learning rate
+  #   Type: float
+  #   Default: 0
+  #   Example: 1e-6 (small but non-zero), 0 (decay to zero)
+  #   Modern practice: 0 or 1e-6
+
+  # ---- StepLR / MultiStepLR Parameters ----
+  #
+  # step_size: !!int  # (StepLR) decay period
+  #   Example: 30 (decay every 30 epochs)
+  #
+  # milestones: !!seq  # (MultiStepLR) epochs to decay
+  #   Example: [30, 60, 90]
+  #
+  # gamma: !!float  # (Step/MultiStep) multiplicative factor
+  #   Type: float in (0, 1)
+  #   Default: 0.1 (10x reduction)
+  #   Example: 0.1 (aggressive), 0.5 (moderate), 0.9 (gentle)
+
+  # ---- ReduceLROnPlateau Parameters ----
+  #
+  # mode: !!str  # "min" for loss, "max" for accuracy
+  # factor: !!float  # LR reduction factor (e.g., 0.1)
+  # patience: !!int  # epochs to wait before reducing (e.g., 10)
+  # threshold: !!float  # minimum change to count as improvement (e.g., 1e-4)
+  # cooldown: !!int  # epochs to wait after LR reduction before resuming monitoring
+  # min_lr: !!float  # minimum LR (floor value)
+
+  # ---- OneCycleLR Parameters ----
+  #
+  # max_lr: !!float  # peak learning rate
+  # total_steps: !!int  # total training steps
+  # pct_start: !!float  # fraction of cycle for LR increase (e.g., 0.3)
+  # anneal_strategy: !!str  # "cos" or "linear"
+  # div_factor: !!float  # initial_lr = max_lr / div_factor
+  # final_div_factor: !!float  # min_lr = max_lr / final_div_factor
+
+  # ---- Example Configurations ----
+  #
+  # Example 1: Cosine Annealing (Most Common)
+  # scheduler_name: CosineAnnealingLR
+  # scheduler_kwargs:
+  #   T_max: 90  # 100 epochs - 10 warmup epochs
+  #   eta_min: 1e-6
+  #
+  # Example 2: Step Decay (Traditional CV)
+  # scheduler_name: MultiStepLR
+  # scheduler_kwargs:
+  #   milestones: [30, 60, 80]
+  #   gamma: 0.1
+  #
+  # Example 3: Linear Decay (Transformers)
+  # scheduler_name: LinearLR
+  # scheduler_kwargs:
+  #   start_factor: 1.0
+  #   end_factor: 0.0
+  #   total_iters: 90000  # steps, not epochs
+  #
+  # Example 4: Adaptive (Exploratory)
+  # scheduler_name: ReduceLROnPlateau
+  # scheduler_kwargs:
+  #   mode: min
+  #   factor: 0.1
+  #   patience: 10
+  #   threshold: 1e-4
+  #
+  # Example 5: Super-Convergence
+  # scheduler_name: OneCycleLR
+  # scheduler_kwargs:
+  #   max_lr: 0.1
+  #   total_steps: 78125  # calculated from dataset
+  #   pct_start: 0.3
+
+scheduler_config_kwargs:  # Lightning-specific scheduler configuration
+  # Type: dict
+  # These parameters tell Lightning how/when to call the scheduler
+  # Reference: Lightning's LRSchedulerConfig
+
+  interval: epoch  # when to step the scheduler
+    # Type: str
+    # Options: "epoch" or "step"
+    # Behavior:
+    #   - "epoch": Scheduler steps after each training epoch
+    #   - "step": Scheduler steps after each optimizer step (batch)
+    #
+    # Use "epoch" for:
+    #   - Epoch-based schedules (StepLR, MultiStepLR with epoch milestones)
+    #   - Coarse-grained schedules (CosineAnnealingLR with T_max in epochs)
+    #   - Small datasets where epochs are short
+    #
+    # Use "step" for:
+    #   - Transformers (step-based warmup + decay)
+    #   - OneCycleLR (requires step-level control)
+    #   - Fine-grained control (large datasets, long epochs)
+    #   - Exact reproduction of paper schedules (often step-based)
+    #
+    # Modern practice:
+    #   - CNNs: interval="epoch" (simpler, easier to reason about)
+    #   - Transformers: interval="step" (standard in BERT, GPT)
+
+  frequency: 3  # how often to step (every N intervals)
+    # Type: int
+    # Default: 1 (step every interval)
+    # Behavior: Scheduler steps every (frequency * interval)
+    # Example: interval="epoch", frequency=3 → step every 3 epochs
+    # Use case: Slow down scheduler updates
+    # Modern practice: Usually keep at 1 (step every interval)
+
+  monitor: train_loss_epoch  # metric to monitor (for ReduceLROnPlateau)
+    # Type: str
+    # Required for: ReduceLROnPlateau (ignored for other schedulers)
+    # Behavior: Name of the metric to track for plateau detection
+    # Options:
+    #   - "train_loss_epoch": Training loss
+    #   - "val_loss_epoch": Validation loss (recommended)
+    #   - "val_acc_epoch": Validation accuracy
+    #   - Any metric logged in your LightningModule
+    #
+    # Modern practice:
+    #   - Monitor validation metrics (not training)
+    #   - "val_loss_epoch" for regression/classification
+    #   - "val_acc_epoch" or "val_f1_epoch" for imbalanced data
+
+  # Additional scheduler_config_kwargs (less commonly used):
+  #
+  # strict: !!bool  # whether to enforce metric exists (default True)
+  # name: !!str  # name for logging purposes
+
+  # ---- Typical Configurations ----
+  #
+  # Configuration 1: Epoch-based Cosine (CNNs)
+  # interval: epoch
+  # frequency: 1
+  # monitor: val_loss_epoch  # not used for cosine, but good to set
+  #
+  # Configuration 2: Step-based Linear (Transformers)
+  # interval: step
+  # frequency: 1
+  # monitor: val_loss_epoch
+  #
+  # Configuration 3: Plateau-based Adaptive
+  # interval: epoch
+  # frequency: 1
+  # monitor: val_loss_epoch  # required for ReduceLROnPlateau
+
+# ---- Complete Training Pipeline Examples ----
+#
+# Example 1: Standard CNN Training (ResNet-50 on ImageNet-style)
+# optimizer_name: SGD
+# optimizer_kwargs: {lr: 0.1, momentum: 0.9, weight_decay: 1e-4}
+# warmup_scheduler_name: LinearLR
+# warmup_scheduler_kwargs: {start_factor: 0.1, end_factor: 1.0, total_iters: 5}
+# warmup_steps: 5
+# scheduler_name: CosineAnnealingLR
+# scheduler_kwargs: {T_max: 95, eta_min: 1e-6}  # 100 epochs - 5 warmup
+# scheduler_config_kwargs: {interval: epoch, frequency: 1}
+#
+# Example 2: Transformer Training (BERT-style)
+# optimizer_name: AdamW
+# optimizer_kwargs: {lr: 3e-4, betas: [0.9, 0.999], weight_decay: 0.01}
+# warmup_scheduler_name: LinearLR
+# warmup_scheduler_kwargs: {start_factor: 0.001, end_factor: 1.0, total_iters: 10000}
+# warmup_steps: 10000
+# scheduler_name: LinearLR
+# scheduler_kwargs: {start_factor: 1.0, end_factor: 0.0, total_iters: 90000}
+# scheduler_config_kwargs: {interval: step, frequency: 1}
+#
+# Example 3: Transfer Learning / Fine-tuning
+# optimizer_name: AdamW
+# optimizer_kwargs: {lr: 5e-5, weight_decay: 0.01}
+# warmup_scheduler_name: LinearLR
+# warmup_scheduler_kwargs: {start_factor: 0.1, end_factor: 1.0, total_iters: 2}
+# warmup_steps: 2
+# scheduler_name: ReduceLROnPlateau
+# scheduler_kwargs: {mode: min, factor: 0.5, patience: 5, threshold: 1e-4}
+# scheduler_config_kwargs: {interval: epoch, frequency: 1, monitor: val_loss_epoch}
+#
+# Example 4: No Scheduler (GAN or constant LR)
+# optimizer_name: Adam
+# optimizer_kwargs: {lr: 2e-4, betas: [0.5, 0.999]}
+# # Omit warmup_scheduler_name, scheduler_name (or set to null) 

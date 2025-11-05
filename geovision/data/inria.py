@@ -25,7 +25,9 @@ from rasterio.crs import CRS
 from geovision.io.local import FileSystemIO as fs 
 from torchvision.datasets.utils import download_url
 
-from geovision.data import Dataset, DatasetConfig
+from geovision.data import Dataset, DatasetConfigParams, Split
+
+#from geovision.data import Dataset, DatasetConfigParams
 #from geovision.data.transforms import SegmentationCompose
 
 import logging
@@ -58,16 +60,6 @@ class Inria:
         },
         index=pa.Index(int)
     )
-
-    default_config = DatasetConfig(
-        random_seed=42,
-        tabular_sampler_name="stratified",
-        tabular_sampler_params={"split_on": "location", "val_frac": 0.15, "test_frac": 0.15},
-        image_pre=T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)]),
-        target_pre=T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=False)]),
-        train_aug=T.Compose([T.RandomCrop(256, pad_if_needed=True), T.RandomHorizontalFlip(0.5), T.RandomVerticalFlip(0.5)]),
-        eval_aug=T.RandomResizedCrop(256)
-    ) 
 
     @classmethod
     def extract(cls, src: Literal["inria.fr", "huggingface", "kaggle"]):
@@ -299,7 +291,7 @@ class Inria:
     @staticmethod
     def __get_tiled_df(index_df: pd.DataFrame, spatial_df: pd.DataFrame, tile_size: tuple, tile_stride: tuple) -> pd.DataFrame:
         return (
-            DatasetConfig.sliding_window_spatial_sampler(index_df, spatial_df, tile_size, tile_stride)
+            DatasetConfigParams.sliding_window_spatial_sampler(index_df, spatial_df, tile_size, tile_stride)
             .merge(spatial_df, how = 'left', left_index=True, right_index=True)
             .assign(x_off = lambda df: df.apply(lambda col: col["x_off"] + col["x_min"] * col["x_res"], axis = 1))
             .assign(y_off = lambda df: df.apply(lambda col: col["y_off"] + col["y_min"] * col["y_res"], axis = 1))
@@ -487,10 +479,9 @@ class Inria_Building_Segmentation_Imagefolder(Dataset):
     num_classes = 2 
     root = Inria.local/"imagefolder"
     schema = Inria.index_df_schema 
-    config = Inria.default_config
     loader = Inria.load
 
-    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
+    def __init__(self, split: Split, config: DatasetConfigParams):
         self.schema.add_columns({"mask_path": pa.Column(str, coerce=True), "split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))})
 
         super().__init__(split, config)
@@ -498,7 +489,7 @@ class Inria_Building_Segmentation_Imagefolder(Dataset):
         self.identity_matrix = np.eye(self.num_classes, dtype = np.uint8)
 
         self.crop = False 
-        if self.config.spatial_sampler_name is not None: 
+        if self.config.spatial_sampler is not None: 
             self.crop = True
     
     def __len__(self):
@@ -529,11 +520,10 @@ class Inria_Building_Segmentation_HDF5(Dataset):
     num_classes = 2 
     root = Inria.local/"hdf5"/"inria.h5"
     schema = Inria.index_df_schema 
-    config = Inria.default_config
     loader = Inria.load
     metadata_group_prefix = "sup/"
 
-    def __init__(self, split: Literal["train", "val", "test", "trainvaltest", "all"] = "all", config: Optional[DatasetConfig] = None):
+    def __init__(self, split: Split, config: DatasetConfigParams):
         self.schema.add_columns({"split": pa.Column(str, pa.Check.isin(Dataset.valid_splits))})
 
         super().__init__(split, config)
@@ -545,7 +535,7 @@ class Inria_Building_Segmentation_HDF5(Dataset):
             self.is_jpeg = True if f[self.metadata_group_prefix + "images"].attrs.get("image_format") == "jpeg" else False
 
         self.crop = False 
-        if self.config.spatial_sampler_name is not None: 
+        if self.config.spatial_sampler is not None: 
             self.crop = True
     
     def __len__(self):
